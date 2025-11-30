@@ -1,4 +1,0 @@
-This is a test document for the Hybrid Local RAG Agent.
-The agent uses Google Gemma 3 and Qwen 2.5 models.
-It supports PDF, DOCX, TXT, CSV, Excel, and PowerPoint files.
-The user can switch models via the Streamlit control panel.
