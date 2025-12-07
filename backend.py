@@ -1,4 +1,14 @@
+"""
+Enhanced RAG Backend with Hybrid Search, Configurable Settings, and Better Error Handling.
+"""
+
 import os
+import pickle
+import re
+from typing import List, Tuple, Optional, Any
+from collections import Counter
+import math
+
 from langchain_community.document_loaders import (
     PyPDFLoader, TextLoader, Docx2txtLoader, 
     UnstructuredExcelLoader, UnstructuredPowerPointLoader, CSVLoader
@@ -6,54 +16,399 @@ from langchain_community.document_loaders import (
 from langchain_community.vectorstores import FAISS
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
 
-# Configuration
-DB_PATH = "faiss_index"
-EMBED_MODEL = "nomic-embed-text"
+from config_manager import load_config, get_config_value
 
-def get_loader(file_path):
+# BM25 index storage path
+BM25_INDEX_PATH = "bm25_index.pkl"
+
+
+class BM25Index:
+    """
+    Simple BM25 implementation for keyword-based retrieval.
+    Used as part of hybrid search.
+    """
+    
+    def __init__(self, k1: float = 1.5, b: float = 0.75):
+        self.k1 = k1
+        self.b = b
+        self.documents: List[Document] = []
+        self.doc_lengths: List[int] = []
+        self.avg_doc_length: float = 0
+        self.doc_freqs: Counter = Counter()
+        self.idf: dict = {}
+        self.doc_term_freqs: List[Counter] = []
+    
+    def _tokenize(self, text: str) -> List[str]:
+        """Simple tokenization: lowercase and split on non-alphanumeric."""
+        return re.findall(r'\w+', text.lower())
+    
+    def fit(self, documents: List[Document]):
+        """Build the BM25 index from documents."""
+        self.documents = documents
+        self.doc_term_freqs = []
+        self.doc_lengths = []
+        
+        # Calculate term frequencies for each document
+        for doc in documents:
+            tokens = self._tokenize(doc.page_content)
+            self.doc_lengths.append(len(tokens))
+            term_freq = Counter(tokens)
+            self.doc_term_freqs.append(term_freq)
+            
+            # Update document frequencies (how many docs contain each term)
+            for term in set(tokens):
+                self.doc_freqs[term] += 1
+        
+        self.avg_doc_length = sum(self.doc_lengths) / len(self.doc_lengths) if self.doc_lengths else 0
+        
+        # Calculate IDF for each term
+        n_docs = len(documents)
+        for term, df in self.doc_freqs.items():
+            self.idf[term] = math.log((n_docs - df + 0.5) / (df + 0.5) + 1)
+    
+    def search(self, query: str, k: int = 5) -> List[Tuple[Document, float]]:
+        """Search for documents matching the query."""
+        if not self.documents:
+            return []
+        
+        query_tokens = self._tokenize(query)
+        scores = []
+        
+        for i, doc in enumerate(self.documents):
+            score = 0
+            doc_len = self.doc_lengths[i]
+            term_freqs = self.doc_term_freqs[i]
+            
+            for token in query_tokens:
+                if token in term_freqs:
+                    tf = term_freqs[token]
+                    idf = self.idf.get(token, 0)
+                    
+                    # BM25 formula
+                    numerator = tf * (self.k1 + 1)
+                    denominator = tf + self.k1 * (1 - self.b + self.b * (doc_len / self.avg_doc_length))
+                    score += idf * (numerator / denominator)
+            
+            scores.append((doc, score))
+        
+        # Sort by score and return top k
+        scores.sort(key=lambda x: x[1], reverse=True)
+        return scores[:k]
+    
+    def save(self, path: str):
+        """Save the BM25 index to disk."""
+        with open(path, 'wb') as f:
+            pickle.dump({
+                'documents': self.documents,
+                'doc_lengths': self.doc_lengths,
+                'avg_doc_length': self.avg_doc_length,
+                'doc_freqs': self.doc_freqs,
+                'idf': self.idf,
+                'doc_term_freqs': self.doc_term_freqs,
+                'k1': self.k1,
+                'b': self.b
+            }, f)
+    
+    @classmethod
+    def load(cls, path: str) -> Optional['BM25Index']:
+        """Load the BM25 index from disk."""
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, 'rb') as f:
+                data = pickle.load(f)
+            
+            index = cls(k1=data.get('k1', 1.5), b=data.get('b', 0.75))
+            index.documents = data['documents']
+            index.doc_lengths = data['doc_lengths']
+            index.avg_doc_length = data['avg_doc_length']
+            index.doc_freqs = data['doc_freqs']
+            index.idf = data['idf']
+            index.doc_term_freqs = data['doc_term_freqs']
+            return index
+        except Exception as e:
+            print(f"Error loading BM25 index: {e}")
+            return None
+
+
+class HybridRetriever:
+    """
+    Combines vector search (FAISS) with keyword search (BM25) for better retrieval.
+    """
+    
+    def __init__(self, vector_store: FAISS, bm25_index: BM25Index, alpha: float = 0.5):
+        """
+        Args:
+            vector_store: FAISS vector store for semantic search
+            bm25_index: BM25 index for keyword search
+            alpha: Weight for vector search (1-alpha for BM25). Default 0.5 = equal weight
+        """
+        self.vector_store = vector_store
+        self.bm25_index = bm25_index
+        self.alpha = alpha
+    
+    def get_relevant_documents(self, query: str, k: int = 5) -> List[Document]:
+        """Retrieve documents using hybrid search."""
+        # Get vector search results
+        vector_results = self.vector_store.similarity_search_with_score(query, k=k*2)
+        
+        # Get BM25 results
+        bm25_results = self.bm25_index.search(query, k=k*2)
+        
+        # Normalize and combine scores
+        doc_scores = {}
+        
+        # Process vector results (lower distance = better)
+        if vector_results:
+            max_dist = max(r[1] for r in vector_results) or 1
+            for doc, dist in vector_results:
+                # Convert distance to similarity score (0-1)
+                score = 1 - (dist / max_dist) if max_dist > 0 else 1
+                doc_id = doc.page_content[:100]  # Use content prefix as ID
+                doc_scores[doc_id] = {
+                    'doc': doc,
+                    'vector_score': score * self.alpha,
+                    'bm25_score': 0
+                }
+        
+        # Process BM25 results
+        if bm25_results:
+            max_bm25 = max(r[1] for r in bm25_results) or 1
+            for doc, score in bm25_results:
+                if score > 0:
+                    normalized = score / max_bm25
+                    doc_id = doc.page_content[:100]
+                    if doc_id in doc_scores:
+                        doc_scores[doc_id]['bm25_score'] = normalized * (1 - self.alpha)
+                    else:
+                        doc_scores[doc_id] = {
+                            'doc': doc,
+                            'vector_score': 0,
+                            'bm25_score': normalized * (1 - self.alpha)
+                        }
+        
+        # Calculate final scores and sort
+        results = []
+        for doc_id, data in doc_scores.items():
+            total_score = data['vector_score'] + data['bm25_score']
+            results.append((data['doc'], total_score))
+        
+        results.sort(key=lambda x: x[1], reverse=True)
+        return [doc for doc, score in results[:k]]
+    
+    def invoke(self, query: str) -> List[Document]:
+        """LangChain-compatible invoke method."""
+        config = load_config()
+        k = config.get('retrieval_k', 3)
+        return self.get_relevant_documents(query, k=k)
+
+
+def get_loader(file_path: str):
     """Factory to pick the right loader for the file type."""
     ext = os.path.splitext(file_path)[1].lower()
-    if ext == ".pdf": return PyPDFLoader(file_path)
-    elif ext in [".txt", ".md"]: return TextLoader(file_path, encoding="utf-8")
-    elif ext == ".docx": return Docx2txtLoader(file_path)
-    elif ext == ".csv": return CSVLoader(file_path)
-    elif ext in [".xlsx", ".xls"]: return UnstructuredExcelLoader(file_path, mode="elements")
-    elif ext in [".pptx", ".ppt"]: return UnstructuredPowerPointLoader(file_path)
-    else: raise ValueError(f"Unsupported file type: {ext}")
+    loaders = {
+        ".pdf": lambda: PyPDFLoader(file_path),
+        ".txt": lambda: TextLoader(file_path, encoding="utf-8"),
+        ".md": lambda: TextLoader(file_path, encoding="utf-8"),
+        ".docx": lambda: Docx2txtLoader(file_path),
+        ".csv": lambda: CSVLoader(file_path),
+        ".xlsx": lambda: UnstructuredExcelLoader(file_path, mode="elements"),
+        ".xls": lambda: UnstructuredExcelLoader(file_path, mode="elements"),
+        ".pptx": lambda: UnstructuredPowerPointLoader(file_path),
+        ".ppt": lambda: UnstructuredPowerPointLoader(file_path),
+        ".xaml": lambda: TextLoader(file_path, encoding="utf-8"),
+    }
+    
+    if ext not in loaders:
+        raise ValueError(f"Unsupported file type: {ext}. Supported: {', '.join(loaders.keys())}")
+    
+    return loaders[ext]()
 
-def ingest_files(file_paths):
-    """Reads files, chunks them, and saves to Vector DB."""
+
+def ingest_files(file_paths: List[str]) -> Tuple[bool, str]:
+    """
+    Reads files, chunks them, and saves to Vector DB and BM25 index.
+    Uses configurable chunk size and overlap.
+    """
+    config = load_config()
+    db_path = config.get('db_path', 'faiss_index')
+    embed_model = config.get('embed_model', 'nomic-embed-text')
+    chunk_size = config.get('chunk_size', 1000)
+    chunk_overlap = config.get('chunk_overlap', 200)
+    
     all_docs = []
+    failed_files = []
+    
     for path in file_paths:
         try:
             loader = get_loader(path)
-            all_docs.extend(loader.load())
+            docs = loader.load()
+            # Add source metadata
+            for doc in docs:
+                doc.metadata['source'] = os.path.basename(path)
+                doc.metadata['full_path'] = path
+            all_docs.extend(docs)
         except Exception as e:
-            return False, f"Error loading {path}: {str(e)}"
+            failed_files.append(f"{os.path.basename(path)}: {str(e)}")
 
-    if not all_docs: return False, "No valid content found."
+    if not all_docs:
+        if failed_files:
+            return False, f"Failed to load files:\n" + "\n".join(failed_files)
+        return False, "No valid content found in the uploaded files."
 
-    # Split text for RAG
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    # Split text for RAG using configured chunk size
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size, 
+        chunk_overlap=chunk_overlap,
+        separators=["\n\n", "\n", ". ", " ", ""]
+    )
     splits = splitter.split_documents(all_docs)
 
-    # Save to FAISS
-    embeddings = OllamaEmbeddings(model=EMBED_MODEL)
-    if os.path.exists(DB_PATH):
-        db = FAISS.load_local(DB_PATH, embeddings, allow_dangerous_deserialization=True)
-        db.add_documents(splits)
-    else:
-        db = FAISS.from_documents(splits, embeddings)
-    
-    db.save_local(DB_PATH)
-    return True, f"Success! Indexed {len(all_docs)} files ({len(splits)} chunks)."
-
-def get_rag_chain(model_name):
-    """Returns the Retrieval Chain with the selected model."""
-    embeddings = OllamaEmbeddings(model=EMBED_MODEL)
-    if not os.path.exists(DB_PATH):
-        return None, ChatOllama(model=model_name)
+    try:
+        # Save to FAISS
+        embeddings = OllamaEmbeddings(model=embed_model)
         
-    db = FAISS.load_local(DB_PATH, embeddings, allow_dangerous_deserialization=True)
-    return db.as_retriever(search_kwargs={"k": 3}), ChatOllama(model=model_name)
+        if os.path.exists(db_path):
+            db = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
+            db.add_documents(splits)
+        else:
+            db = FAISS.from_documents(splits, embeddings)
+        
+        db.save_local(db_path)
+        
+        # Build/update BM25 index
+        bm25_index = BM25Index.load(BM25_INDEX_PATH)
+        if bm25_index:
+            # Add new documents to existing index
+            all_bm25_docs = bm25_index.documents + splits
+            bm25_index.fit(all_bm25_docs)
+        else:
+            bm25_index = BM25Index()
+            bm25_index.fit(splits)
+        
+        bm25_index.save(BM25_INDEX_PATH)
+        
+    except Exception as e:
+        return False, f"Error during indexing: {str(e)}"
+    
+    success_msg = f"Success! Indexed {len(all_docs)} files ({len(splits)} chunks)."
+    if failed_files:
+        success_msg += f"\nWarning: Some files failed:\n" + "\n".join(failed_files)
+    
+    return True, success_msg
+
+
+def get_rag_chain(model_name: str = None) -> Tuple[Optional[Any], ChatOllama]:
+    """
+    Returns the Retrieval Chain with the selected model.
+    Supports hybrid search if enabled in config.
+    """
+    config = load_config()
+    
+    if model_name is None:
+        model_name = config.get('model', 'gemma3:270m')
+    
+    db_path = config.get('db_path', 'faiss_index')
+    embed_model = config.get('embed_model', 'nomic-embed-text')
+    use_hybrid = config.get('use_hybrid_search', True)
+    hybrid_alpha = config.get('hybrid_alpha', 0.5)
+    retrieval_k = config.get('retrieval_k', 3)
+    ollama_host = config.get('ollama_host', 'http://localhost:11434')
+    
+    embeddings = OllamaEmbeddings(model=embed_model, base_url=ollama_host)
+    llm = ChatOllama(model=model_name, base_url=ollama_host)
+    
+    if not os.path.exists(db_path):
+        return None, llm
+    
+    try:
+        db = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
+        
+        if use_hybrid:
+            # Load BM25 index for hybrid search
+            bm25_index = BM25Index.load(BM25_INDEX_PATH)
+            if bm25_index:
+                retriever = HybridRetriever(db, bm25_index, alpha=hybrid_alpha)
+                return retriever, llm
+        
+        # Fall back to vector-only search
+        return db.as_retriever(search_kwargs={"k": retrieval_k}), llm
+        
+    except Exception as e:
+        print(f"Error loading vector store: {e}")
+        return None, llm
+
+
+def clear_index() -> Tuple[bool, str]:
+    """Clear all indexed documents."""
+    config = load_config()
+    db_path = config.get('db_path', 'faiss_index')
+    
+    try:
+        import shutil
+        if os.path.exists(db_path):
+            shutil.rmtree(db_path)
+        if os.path.exists(BM25_INDEX_PATH):
+            os.remove(BM25_INDEX_PATH)
+        return True, "Index cleared successfully."
+    except Exception as e:
+        return False, f"Error clearing index: {str(e)}"
+
+
+def get_indexed_files() -> List[str]:
+    """Get list of files that have been indexed."""
+    config = load_config()
+    db_path = config.get('db_path', 'faiss_index')
+    embed_model = config.get('embed_model', 'nomic-embed-text')
+    
+    if not os.path.exists(db_path):
+        return []
+    
+    try:
+        embeddings = OllamaEmbeddings(model=embed_model)
+        db = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
+        
+        # Get unique sources from docstore
+        sources = set()
+        for doc_id in db.docstore._dict:
+            doc = db.docstore._dict[doc_id]
+            if hasattr(doc, 'metadata') and 'source' in doc.metadata:
+                sources.add(doc.metadata['source'])
+        
+        return sorted(list(sources))
+    except Exception as e:
+        print(f"Error getting indexed files: {e}")
+        return []
+
+
+def get_index_stats() -> dict:
+    """Get statistics about the current index."""
+    config = load_config()
+    db_path = config.get('db_path', 'faiss_index')
+    embed_model = config.get('embed_model', 'nomic-embed-text')
+    
+    stats = {
+        "total_chunks": 0,
+        "total_files": 0,
+        "files": [],
+        "bm25_available": False
+    }
+    
+    if not os.path.exists(db_path):
+        return stats
+    
+    try:
+        embeddings = OllamaEmbeddings(model=embed_model)
+        db = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
+        
+        stats["total_chunks"] = len(db.docstore._dict)
+        stats["files"] = get_indexed_files()
+        stats["total_files"] = len(stats["files"])
+        stats["bm25_available"] = os.path.exists(BM25_INDEX_PATH)
+        
+    except Exception as e:
+        print(f"Error getting index stats: {e}")
+    
+    return stats

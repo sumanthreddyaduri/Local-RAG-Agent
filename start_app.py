@@ -43,7 +43,7 @@ def check_dependencies():
 
 def start():
     check_dependencies()
-    print("Initializing the Agent...")
+    print("Initializing Hybrid Architecture...")
     
     # 1. Start Flask UI in background
     ui = subprocess.Popen(
@@ -53,16 +53,31 @@ def start():
     )
     
     # 2. Open Browser
-    time.sleep(2)
+    time.sleep(5)
     webbrowser.open("http://localhost:8501")
     
-    # 3. Start Terminal Chat
+    # 3. Start Terminal Chat in New Window
+    print("\nLaunching CLI Chat in a new window...")
+    if sys.platform == 'win32':
+        subprocess.Popen(["start", "cmd", "/k", sys.executable, "chat.py"], shell=True)
+    else:
+        # Fallback for other OS (Linux/Mac) - though user is on Windows
+        subprocess.Popen(["x-terminal-emulator", "-e", f"{sys.executable} chat.py"])
+
+    # 4. Lock Main Terminal
+    print("\n" + "="*60)
+    print("MAIN TERMINAL LOCKED")
+    print("="*60)
+    print("Continue in the Chat window.")
+    print("You can switch the chat mode to CLI or Browser for advanced chat.")
+    print("Press Ctrl+C to shutdown the entire system.")
+    print("="*60)
+    
     try:
-        chat.main()
+        while True:
+            time.sleep(1)
     except KeyboardInterrupt:
-        pass
-    finally:
-        print("\n🛑 Shutting down system...")
+        print("\nShutting down system...")
         ui.terminate()
         sys.exit()
 

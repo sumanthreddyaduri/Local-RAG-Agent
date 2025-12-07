@@ -1,1 +1,25 @@
-{"model": "qwen2.5:0.5b"}
+{
+  "model": "gemma3:270m",
+  "available_models": [
+    "gemma3:270m",
+    "qwen2.5:0.5b",
+    "llama3.2:1b",
+    "phi3:mini"
+  ],
+  "mode": "browser",
+  "chunk_size": 1000,
+  "chunk_overlap": 200,
+  "retrieval_k": 3,
+  "use_hybrid_search": true,
+  "hybrid_alpha": 0.5,
+  "use_reranking": false,
+  "embed_model": "nomic-embed-text",
+  "max_history_context": 10,
+  "enable_tts": false,
+  "stream_responses": true,
+  "ollama_host": "http://localhost:11434",
+  "upload_dir": "./uploaded_files",
+  "db_path": "faiss_index",
+  "theme": "dark",
+  "show_sources": true
+}
