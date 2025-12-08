@@ -2589,6 +2589,13 @@
 
         // Initial Load
         loadSessions();
+        
+        // Show default view or last used view
+        (function initDefaultView() {
+            const lastView = localStorage.getItem('lastView');
+            // Default to 'controls' if no last view saved
+            showView(lastView || 'controls');
+        })();
 
         // Sidebar Resize Functionality
         (function initSidebarResize() {
