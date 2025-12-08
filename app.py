@@ -27,6 +27,9 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # Current active session (thread-safe would require Flask-Login or similar in production)
 CURRENT_SESSION_ID = None
 
+# Shared memory for browser content (Chrome Extension sync)
+BROWSER_CONTEXT = {"url": "", "content": "", "title": ""}
+
 
 def get_current_session():
     """Get or create the current chat session."""
@@ -71,6 +74,16 @@ def chat():
         
         # Get conversation history from database
         history_text = format_history_for_prompt(session_id, max_history)
+        
+        # Inject browser context if in browser mode
+        if config.get("mode") == "browser" and BROWSER_CONTEXT.get("content"):
+            browser_content = BROWSER_CONTEXT.get("content", "")[:4000]  # Truncate to avoid overflow
+            browser_url = BROWSER_CONTEXT.get("url", "")
+            query = f"""CONTEXT FROM ACTIVE BROWSER TAB ({browser_url}):
+{browser_content}
+
+USER QUERY:
+{query}"""
         
         if retriever is None:
             template = """You are a helpful AI assistant. Answer the question based on the conversation history.
@@ -429,6 +442,31 @@ def index_stats():
     return jsonify(stats)
 
 
+@app.route("/api/browser/sync", methods=["POST"])
+def sync_browser():
+    """Endpoint for Chrome Extension to send active tab data."""
+    global BROWSER_CONTEXT
+    data = request.json or {}
+    BROWSER_CONTEXT["url"] = data.get("url", "")
+    BROWSER_CONTEXT["content"] = data.get("content", "")
+    BROWSER_CONTEXT["title"] = data.get("title", "")
+    return jsonify({"status": "synced", "url": BROWSER_CONTEXT["url"]})
+
+
+@app.route("/api/browser/context", methods=["GET"])
+def get_browser_context():
+    """Get the currently synced browser context."""
+    return jsonify(BROWSER_CONTEXT)
+
+
+@app.route("/api/browser/clear", methods=["POST"])
+def clear_browser_context():
+    """Clear the browser context."""
+    global BROWSER_CONTEXT
+    BROWSER_CONTEXT = {"url": "", "content": "", "title": ""}
+    return jsonify({"status": "cleared"})
+
+
 @app.route("/api/stats", methods=["GET"])
 def app_stats():
     """Get aggregated application statistics for the dashboard."""
@@ -761,4 +799,5 @@ if __name__ == "__main__":
     print(f"Hybrid Search: {'Enabled' if config.get('use_hybrid_search') else 'Disabled'}")
     print(f"{'='*50}\n")
     
-    app.run(port=8501, debug=True)
+    # Security: Bind to localhost only to prevent network exposure
+    app.run(host='127.0.0.1', port=8501, debug=True)

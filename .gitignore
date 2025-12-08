@@ -5,3 +5,6 @@ faiss_index/
 uploaded_files/
 .env
 .DS_Store
+*.db
+bm25_index.pkl
+*.log

@@ -23,6 +23,13 @@ from config_manager import load_config, get_config_value
 # BM25 index storage path
 BM25_INDEX_PATH = "bm25_index.pkl"
 
+# Global cache variables for performance optimization
+_CACHED_DB = None
+_CACHED_BM25 = None
+_CACHED_RETRIEVER = None
+_CACHED_LLM = None
+_CACHED_MODEL_NAME = None
+
 
 class BM25Index:
     """
@@ -297,14 +304,20 @@ def ingest_files(file_paths: List[str]) -> Tuple[bool, str]:
     if failed_files:
         success_msg += f"\nWarning: Some files failed:\n" + "\n".join(failed_files)
     
+    # Clear cache to force reload with new documents
+    clear_rag_cache()
+    
     return True, success_msg
 
 
 def get_rag_chain(model_name: str = None) -> Tuple[Optional[Any], ChatOllama]:
     """
     Returns the Retrieval Chain with the selected model.
+    Uses global caching to prevent disk I/O on every chat call.
     Supports hybrid search if enabled in config.
     """
+    global _CACHED_DB, _CACHED_BM25, _CACHED_RETRIEVER, _CACHED_LLM, _CACHED_MODEL_NAME
+    
     config = load_config()
     
     if model_name is None:
@@ -317,28 +330,46 @@ def get_rag_chain(model_name: str = None) -> Tuple[Optional[Any], ChatOllama]:
     retrieval_k = config.get('retrieval_k', 3)
     ollama_host = config.get('ollama_host', 'http://localhost:11434')
     
-    embeddings = OllamaEmbeddings(model=embed_model, base_url=ollama_host)
-    llm = ChatOllama(model=model_name, base_url=ollama_host)
+    # Check if we need a new LLM (model changed)
+    if _CACHED_LLM is None or _CACHED_MODEL_NAME != model_name:
+        _CACHED_LLM = ChatOllama(model=model_name, base_url=ollama_host)
+        _CACHED_MODEL_NAME = model_name
+    
+    llm = _CACHED_LLM
     
     if not os.path.exists(db_path):
         return None, llm
     
+    # Return cached retriever if available
+    if _CACHED_RETRIEVER is not None:
+        return _CACHED_RETRIEVER, llm
+    
     try:
-        db = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
+        embeddings = OllamaEmbeddings(model=embed_model, base_url=ollama_host)
+        _CACHED_DB = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
         
         if use_hybrid:
             # Load BM25 index for hybrid search
-            bm25_index = BM25Index.load(BM25_INDEX_PATH)
-            if bm25_index:
-                retriever = HybridRetriever(db, bm25_index, alpha=hybrid_alpha)
-                return retriever, llm
+            _CACHED_BM25 = BM25Index.load(BM25_INDEX_PATH)
+            if _CACHED_BM25:
+                _CACHED_RETRIEVER = HybridRetriever(_CACHED_DB, _CACHED_BM25, alpha=hybrid_alpha)
+                return _CACHED_RETRIEVER, llm
         
         # Fall back to vector-only search
-        return db.as_retriever(search_kwargs={"k": retrieval_k}), llm
+        _CACHED_RETRIEVER = _CACHED_DB.as_retriever(search_kwargs={"k": retrieval_k})
+        return _CACHED_RETRIEVER, llm
         
     except Exception as e:
         print(f"Error loading vector store: {e}")
         return None, llm
+
+
+def clear_rag_cache():
+    """Clear the RAG cache. Call after ingest_files or clear_index to force reload."""
+    global _CACHED_DB, _CACHED_BM25, _CACHED_RETRIEVER
+    _CACHED_DB = None
+    _CACHED_BM25 = None
+    _CACHED_RETRIEVER = None
 
 
 def clear_index() -> Tuple[bool, str]:
@@ -352,6 +383,8 @@ def clear_index() -> Tuple[bool, str]:
             shutil.rmtree(db_path)
         if os.path.exists(BM25_INDEX_PATH):
             os.remove(BM25_INDEX_PATH)
+        # Clear cache to reflect cleared index
+        clear_rag_cache()
         return True, "Index cleared successfully."
     except Exception as e:
         return False, f"Error clearing index: {str(e)}"

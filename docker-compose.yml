@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  rag-agent:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./uploaded_files:/app/uploaded_files
+      - ./faiss_index:/app/faiss_index
+      - ./config.json:/app/config.json
+    environment:
+      - OLLAMA_HOST=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
