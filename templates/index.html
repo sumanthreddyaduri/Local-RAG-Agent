@@ -1524,21 +1524,34 @@
                             <span>Indexed Chunks</span>
                             <span id="chunk-count">-</span>
                         </div>
+                        <div class="health-item">
+                            <span>Chat Mode</span>
+                            <span id="current-mode">{{ 'Browser' if config.mode == 'browser' else 'CLI' }}</span>
+                        </div>
                     </div>
 
-                    <form action="/upload" method="post" enctype="multipart/form-data">
-                        <div class="settings-section">
-                            <h3>📥 Ingest Documents</h3>
-                            <input type="file" name="files" multiple required
-                                accept=".pdf,.txt,.md,.docx,.csv,.xlsx,.xls,.pptx,.ppt">
-                            <button type="submit" class="primary-btn">🚀 Process Files</button>
-                        </div>
-                    </form>
-
+                    <!-- Mode Switcher -->
                     <div class="settings-section">
-                        <h3>🗑️ Index Management</h3>
-                        <button class="primary-btn danger-btn" onclick="clearIndex()">Clear All Indexed
-                            Documents</button>
+                        <h3>🔄 Mode Control</h3>
+                        <div class="mode-buttons">
+                            <button class="mode-btn {{ 'active' if config.mode == 'cli' else '' }}" 
+                                onclick="setMode('cli')" id="cli-mode-btn">
+                                💻 CLI Mode
+                            </button>
+                            <button class="mode-btn {{ 'active' if config.mode == 'browser' else '' }}" 
+                                onclick="setMode('browser')" id="browser-mode-btn">
+                                🌐 Browser Mode
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Quick Actions -->
+                    <div class="settings-section">
+                        <h3>⚡ Quick Actions</h3>
+                        <div class="btn-row">
+                            <button class="primary-btn" onclick="showView('files')">📁 Manage Files</button>
+                            <button class="primary-btn" onclick="showView('settings')">⚙️ Settings</button>
+                        </div>
                     </div>
 
                     <div id="mode-status" class="status-msg">
@@ -1767,6 +1780,14 @@
                         <div class="empty-state hidden" id="empty-state">
                             <div class="empty-state-icon">📂</div>
                             <p>No documents indexed yet</p>
+                        </div>
+
+                        <!-- Index Management -->
+                        <div class="index-management-section" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--border-color);">
+                            <h3 style="margin-bottom: 15px;">🗑️ Index Management</h3>
+                            <button class="primary-btn danger-btn" onclick="clearIndex()" style="width: auto;">
+                                Clear All Indexed Documents
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -2617,6 +2638,58 @@
         })();
 
 
+        // Clear Index Function
+        async function clearIndex() {
+            if (!confirm('Are you sure you want to clear ALL indexed documents? This cannot be undone.')) {
+                return;
+            }
+            
+            showToast('Clearing index...', 'info');
+            try {
+                const response = await fetch('/api/index/clear', { method: 'POST' });
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    showToast('Index cleared successfully', 'success');
+                    loadStats();
+                    loadFiles();
+                } else {
+                    showToast('Failed to clear index: ' + (data.error || 'Unknown error'), 'error');
+                }
+            } catch (e) {
+                showToast('Error clearing index: ' + e.message, 'error');
+            }
+        }
+
+        // Set Mode Function
+        async function setMode(mode) {
+            try {
+                const response = await fetch('/set_mode', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode: mode })
+                });
+                const data = await response.json();
+                
+                if (data.status === 'success' || response.ok) {
+                    // Update UI
+                    document.getElementById('current-mode').textContent = mode === 'browser' ? 'Browser' : 'CLI';
+                    document.getElementById('mode-status').innerHTML = 
+                        `Mode: <strong>${mode === 'browser' ? 'Browser Chat' : 'CLI Chat'}</strong>`;
+                    
+                    // Update button states
+                    document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
+                    document.getElementById(`${mode}-mode-btn`)?.classList.add('active');
+                    
+                    showToast(`Switched to ${mode === 'browser' ? 'Browser' : 'CLI'} mode`, 'success');
+                } else {
+                    showToast('Failed to switch mode', 'error');
+                }
+            } catch (e) {
+                showToast('Error switching mode: ' + e.message, 'error');
+            }
+        }
+
         function setFileView(mode) {
             fileViewMode = mode;
             loadFiles(); // Re-render
@@ -2702,6 +2775,35 @@
         .context-menu-item.danger:hover {
             background-color: rgba(241, 76, 76, 0.2);
             color: #ff6b6b;
+        }
+
+        /* Mode Buttons */
+        .mode-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .mode-btn {
+            flex: 1;
+            padding: 12px 20px;
+            border: 2px solid var(--border-color);
+            background: transparent;
+            color: var(--text-color);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 14px;
+        }
+
+        .mode-btn:hover {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: var(--accent-color);
+        }
+
+        .mode-btn.active {
+            background: var(--accent-color);
+            border-color: var(--accent-color);
+            color: white;
         }
     </style>
 </body>
