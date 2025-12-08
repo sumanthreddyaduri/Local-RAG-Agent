@@ -48,6 +48,24 @@ def format_docs(docs):
     return "\n\n".join(formatted)
 
 
+@app.route("/health", methods=["GET"])
+def health():
+    """Health check endpoint for monitoring."""
+    config = load_config()
+    ollama_host = config.get("ollama_host", "http://localhost:11434")
+    ollama_status = check_ollama_health(ollama_host)
+    
+    return jsonify({
+        "status": "healthy",
+        "ollama": {
+            "available": ollama_status["available"],
+            "error": ollama_status.get("error")
+        },
+        "model": config.get("model", "unknown"),
+        "mode": config.get("mode", "cli")
+    })
+
+
 @app.route("/chat", methods=["POST"])
 def chat():
     """Handle chat messages with persistent history and streaming responses."""
@@ -85,15 +103,35 @@ def chat():
 USER QUERY:
 {query}"""
         
-        if retriever is None:
-            template = """You are a helpful AI assistant. Answer the question based on the conversation history.
+        # Intent detection: Check if query needs document context
+        greeting_patterns = ['hello', 'hi', 'hey', 'good morning', 'good evening', 'good afternoon', 
+                            'how are you', 'what\'s up', 'thanks', 'thank you', 'bye', 'goodbye',
+                            'who are you', 'what can you do', 'help me']
+        query_lower = query.lower().strip()
+        is_greeting_or_meta = any(pattern in query_lower for pattern in greeting_patterns) and len(query_lower) < 50
+        
+        # Also check if query seems conversational vs document-seeking
+        doc_seeking_patterns = ['what', 'how', 'explain', 'describe', 'find', 'search', 'tell me about',
+                                'summarize', 'list', 'show', 'document', 'file', 'content', 'according to']
+        needs_rag = any(pattern in query_lower for pattern in doc_seeking_patterns) and not is_greeting_or_meta
+        
+        if retriever is None or is_greeting_or_meta:
+            # Conversational mode - no document context
+            template = """You are a helpful, friendly AI assistant powered by a RAG (Retrieval-Augmented Generation) system.
+
+If the user is just greeting you or having casual conversation, respond naturally and warmly.
+If they ask what you can do, explain that you can:
+- Answer questions about their uploaded documents
+- Search through files they've indexed
+- Have general conversations
+- Help with document analysis
 
 Conversation History:
 {history}
 
-User Question: {question}
+User Message: {question}
 
-Provide a helpful and informative response."""
+Respond naturally and helpfully. Keep it concise for greetings."""
             chain = (
                 {"question": RunnablePassthrough(), "history": lambda x: history_text} 
                 | ChatPromptTemplate.from_template(template) 
@@ -101,21 +139,25 @@ Provide a helpful and informative response."""
                 | StrOutputParser()
             )
         else:
-            template = """You are an AI assistant with access to the user's documents. 
-The context below contains relevant excerpts from the documents along with their source filenames.
-Answer the question based on the context provided and the conversation history.
-If the user asks what files or documents you have access to, list the unique source filenames from the context.
-If you cannot find the answer in the context, say so clearly.
+            # RAG mode - use document context
+            template = """You are an AI assistant with access to the user's documents.
+
+IMPORTANT INSTRUCTIONS:
+1. First, assess if the user's question actually requires information from the documents.
+2. If the question is general or conversational, respond naturally WITHOUT citing documents.
+3. If the question IS about the documents, use the context provided below.
+4. If the context doesn't contain relevant information to answer the question, say "I don't have that specific information in your documents" rather than guessing.
+5. When using document content, cite the source filename.
 
 Conversation History:
 {history}
 
-Document Context:
+Document Context (use only if relevant to the question):
 {context}
 
 User Question: {question}
 
-Provide a helpful response based on the documents."""
+Respond helpfully. Only reference documents if the question is actually about them."""
             
             def get_context(query):
                 docs = retriever.invoke(query) if hasattr(retriever, 'invoke') else retriever.get_relevant_documents(query)
