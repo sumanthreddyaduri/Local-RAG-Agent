@@ -1601,10 +1601,15 @@
                     <div class="session-actions" style="display: flex; gap: 5px;">
                         <button class="icon-btn tiny"
                             onclick="event.stopPropagation(); openRenameModal({{ session.id }}, '{{ session.name|replace("'", "\\'") }}')"
-                            title="Rename">✏️</button>
+                            title="Rename"><img src="https://img.icons8.com/ios/16/ffffff/edit-property.png" alt="Rename"
+                                style="width:14px;height:14px;"></button>
+
                         <button class="delete-btn"
-                            onclick="event.stopPropagation(); deleteSession({{ session.id }})">🗑️</button>
+                            onclick="event.stopPropagation(); deleteSession({{ session.id }})"><img
+                                src="https://img.icons8.com/color/16/filled-trash.png" alt="Delete"
+                                style="width:14px;height:14px;"></button>
                     </div>
+
                 </div>
                 {% else %}
                 <div class="history-item active">Current Session</div>
@@ -2140,18 +2145,49 @@
 
             <!-- Input Bar -->
             <div id="input-bar" class="input-bar hidden">
-                <div class="input-container">
+                <!-- Model Selector -->
+                <div class="model-selector" style="position: relative; margin-right: 10px;">
+                    <button id="model-dropdown-btn" onclick="toggleModelDropdown()" 
+                        style="background: var(--card-bg); border: 1px solid var(--border-color); color: var(--text-color); padding: 8px 12px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 0.9em;">
+                        <span id="current-model-name">{{ config.model }}</span>
+                        <span style="font-size: 0.7em;">▼</span>
+                    </button>
+                    <div id="model-dropdown" class="model-dropdown hidden" 
+                        style="position: absolute; bottom: 100%; left: 0; background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 8px; min-width: 150px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 1000; margin-bottom: 5px;">
+                        {% for model in config.available_models %}
+                        <div class="model-option" onclick="selectModel('{{ model }}')" 
+                            style="padding: 10px 15px; cursor: pointer; transition: background 0.2s; {{ 'background: var(--accent-color); color: white;' if model == config.model else '' }}"
+                            onmouseover="this.style.background='var(--accent-color)'; this.style.color='white';" 
+                            onmouseout="this.style.background='{{ 'var(--accent-color)' if model == config.model else 'transparent' }}'; this.style.color='{{ 'white' if model == config.model else 'var(--text-color)' }}';">
+                            {{ model }}
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <!-- Input Container with icons inside -->
+                <div class="input-container" style="flex: 1; display: flex; align-items: center; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 25px; padding: 5px 10px;">
+                    <!-- Camera (Left inside textbox) -->
                     <button class="icon-btn" onclick="document.getElementById('img-upload').click()"
-                        title="Upload Image for OCR">
-                        📷
+                        title="Upload Image for OCR" style="background: none; padding: 8px; margin-right: 5px;">
+                        <img src="https://img.icons8.com/ios/20/ffffff/camera--v1.png" alt="Camera" style="width:20px;height:20px;">
                     </button>
                     <input type="file" id="img-upload" style="display: none;" accept="image/*" onchange="uploadImage()">
 
+                    <!-- Text Input -->
                     <input type="text" id="chat-input" placeholder="Ask a question about your documents..."
-                        onkeypress="if(event.key==='Enter') sendMessage()">
+                        onkeypress="if(event.key==='Enter') sendMessage()"
+                        style="flex: 1; background: transparent; border: none; outline: none; color: var(--text-color); font-size: 0.95em; padding: 8px 5px;">
 
-                    <button class="icon-btn" onclick="startVoice()" title="Voice Input">🎤</button>
-                    <button class="icon-btn" onclick="sendMessage()" title="Send Message">➤</button>
+                    <!-- Mic (Right inside textbox) -->
+                    <button class="icon-btn" onclick="startVoice()" title="Voice Input" style="background: none; padding: 8px;">
+                        <img src="https://img.icons8.com/ios/20/ffffff/microphone--v1.png" alt="Mic" style="width:20px;height:20px;">
+                    </button>
+                    
+                    <!-- Send (Beside mic) -->
+                    <button class="icon-btn" onclick="sendMessage()" title="Send Message" style="background: var(--accent-color); padding: 8px; border-radius: 50%; margin-left: 5px;">
+                        <img src="https://img.icons8.com/ios-filled/20/ffffff/sent.png" alt="Send" style="width:20px;height:20px;">
+                    </button>
                 </div>
             </div>
 
@@ -2165,6 +2201,40 @@
         let fileViewMode = 'grid';
         let selectedFiles = new Set();
         let currentContextFile = null;
+
+        // Model Switching Functions
+        function toggleModelDropdown() {
+            const dropdown = document.getElementById('model-dropdown');
+            dropdown.classList.toggle('hidden');
+        }
+
+        async function selectModel(modelName) {
+            try {
+                const response = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model: modelName })
+                });
+                if (response.ok) {
+                    document.getElementById('current-model-name').textContent = modelName;
+                    document.getElementById('model-dropdown').classList.add('hidden');
+                    showToast(`Model switched to ${modelName}`, 'success');
+                    // Reload page to reinitialize with new model
+                    setTimeout(() => location.reload(), 1000);
+                }
+            } catch (e) {
+                showToast('Failed to switch model', 'error');
+            }
+        }
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', function(e) {
+            const dropdown = document.getElementById('model-dropdown');
+            const btn = document.getElementById('model-dropdown-btn');
+            if (dropdown && btn && !dropdown.contains(e.target) && !btn.contains(e.target)) {
+                dropdown.classList.add('hidden');
+            }
+        });
 
         // 1. Theme Toggle
         function toggleTheme() {

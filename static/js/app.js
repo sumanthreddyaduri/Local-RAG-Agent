@@ -731,12 +731,15 @@ function showContextMenu(event, type, id) {
     if (type === 'indexed') {
         items = `
             <div class="context-menu-item" onclick="showPreview('${safeId}')">
-                Preview
+                <img src="https://img.icons8.com/ios/20/ffffff/file-preview.png" alt="Preview" style="width:16px;height:16px;vertical-align:middle;margin-right:6px;"> Preview
             </div>
+
             <div class="context-menu-item danger" onclick="deleteFile('${safeId}')">
-                Remove
+                <img src="https://img.icons8.com/color/20/filled-trash.png" alt="Delete" style="width:16px;height:16px;vertical-align:middle;margin-right:6px;"> Remove
             </div>
+
         `;
+
     }
     menu.innerHTML = items;
 
