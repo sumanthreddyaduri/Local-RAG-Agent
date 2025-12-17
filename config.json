@@ -1,6 +1,7 @@
 {
-  "model": "gemma3:270m",
+  "model": "gemma2:2b",
   "available_models": [
+    "gemma2:2b",
     "gemma3:270m",
     "qwen2.5:0.5b",
     "llama3.2:1b",

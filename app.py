@@ -11,7 +11,9 @@ from config_manager import load_config, save_config, update_config, DEFAULT_CONF
 from database import (
     get_or_create_default_session, create_session, get_all_sessions,
     add_message, get_messages, format_history_for_prompt, 
-    delete_session, rename_session, clear_session_messages
+    delete_session, rename_session, clear_session_messages,
+    toggle_pin_session, get_pinned_sessions,
+    create_prompt, get_all_prompts, delete_prompt, search_chat_data
 )
 from health_check import check_ollama_health, check_model_available, get_system_status
 from langchain_core.prompts import ChatPromptTemplate
@@ -110,10 +112,11 @@ USER QUERY:
         query_lower = query.lower().strip()
         is_greeting_or_meta = any(pattern in query_lower for pattern in greeting_patterns) and len(query_lower) < 50
         
-        # Also check if query seems conversational vs document-seeking
-        doc_seeking_patterns = ['what', 'how', 'explain', 'describe', 'find', 'search', 'tell me about',
-                                'summarize', 'list', 'show', 'document', 'file', 'content', 'according to']
-        needs_rag = any(pattern in query_lower for pattern in doc_seeking_patterns) and not is_greeting_or_meta
+        # Document-specific keywords - triggers RAG only when user explicitly mentions documents
+        doc_keywords = ['document', 'file', 'uploaded', 'indexed', 'my files', 'in the context',
+                        'according to', 'based on', 'from the', 'in my', 'search my', 'find in',
+                        'what does the document say', 'summary of', 'readme', 'pdf', 'txt', 'csv']
+        needs_rag = any(keyword in query_lower for keyword in doc_keywords) and not is_greeting_or_meta
         
         if retriever is None or is_greeting_or_meta:
             # Conversational mode - no document context
@@ -140,24 +143,26 @@ Respond naturally and helpfully. Keep it concise for greetings."""
             )
         else:
             # RAG mode - use document context
-            template = """You are an AI assistant with access to the user's documents.
-
+            template = """You are an AI assistant with access to the user's documents, but you are also a general-purpose assistant.
+            
 IMPORTANT INSTRUCTIONS:
-1. First, assess if the user's question actually requires information from the documents.
-2. If the question is general or conversational, respond naturally WITHOUT citing documents.
-3. If the question IS about the documents, use the context provided below.
-4. If the context doesn't contain relevant information to answer the question, say "I don't have that specific information in your documents" rather than guessing.
-5. When using document content, cite the source filename.
+1. **Prioritize the User's Input**: Answer the question directly based on the user's query and your general knowledge.
+2. **Use Context Wisely**: Only use the "Document Context" below if:
+   - The user explicitly asks about their files/documents.
+   - The answer requires specific information not in your general training (e.g. private data).
+3. **General Queries**: If the user asks a general question (e.g. "How do I write a loop?"), answer it generally. DO NOT limit yourself to the documents.
+4. **No Hallucination**: If the user specifically asks "What is in file X?" and it's not in the context, say so. But for general questions, answer normally.
+5. **Citations**: If you do use the context, briefly mention the source filename.
 
 Conversation History:
 {history}
 
-Document Context (use only if relevant to the question):
+Document Context:
 {context}
 
 User Question: {question}
 
-Respond helpfully. Only reference documents if the question is actually about them."""
+Response:"""
             
             def get_context(query):
                 docs = retriever.invoke(query) if hasattr(retriever, 'invoke') else retriever.get_relevant_documents(query)
@@ -213,28 +218,38 @@ def ocr():
 
 @app.route("/")
 def index():
-    """Render the main application page."""
+    """Render the main chat interface."""
     config = load_config()
-    message = request.args.get("message")
-    status = request.args.get("status")
-    
     session_id = get_current_session()
-    chat_history = get_messages(session_id)
-    sessions = get_all_sessions(limit=20)
     
-    # Convert to format expected by template
-    formatted_history = [(msg['role'].capitalize(), msg['content']) for msg in chat_history]
+    # Get all sessions for sidebar and dashboard
+    all_sessions = get_all_sessions()
     
+    # Get history for current session
+    history = get_messages(session_id)
+    
+    # Get indexed files
+    files = get_indexed_files()
+    
+    # Get available models
+    models = ["gemma3:270m", "llama2", "mistral", "neural-chat"]
+    try:
+        ollama_config = check_ollama_health(config.get("ollama_host"))
+        if ollama_config.get("models"):
+            models = ollama_config["models"]
+    except:
+        pass
+
     return render_template(
-        "index.html", 
-        config=config, 
-        message=message, 
-        status=status, 
-        chat_history=formatted_history,
-        sessions=sessions,
+        "index.html",
+        config=config,
+        sessions=all_sessions,
         current_session_id=session_id,
-        indexed_files=get_indexed_files(),
-        available_models=config.get('available_models', DEFAULT_CONFIG['available_models'])
+        history=history,
+        files=files,
+        available_models=models,
+        recent_activity=all_sessions[:5], # Pass top 5 recent sessions for dashboard
+        pinned_sessions=get_pinned_sessions() # Pass pinned sessions
     )
 
 
@@ -827,6 +842,88 @@ def server_error(e):
     if request.path.startswith('/api/'):
         return jsonify({"error": "Internal server error"}), 500
     return render_template("index.html", config=load_config(), message="Server error occurred", status="error")
+
+
+# ------------------------------------------------------------------
+# API: Pinned Sessions
+# ------------------------------------------------------------------
+@app.route("/api/sessions/<int:session_id>/pin", methods=["POST"])
+def pin_session(session_id):
+    """Toggle pin status."""
+    data = request.json
+    is_pinned = data.get("is_pinned", False)
+    success = toggle_pin_session(session_id, is_pinned)
+    return jsonify({"success": success})
+
+@app.route("/api/pinned_sessions", methods=["GET"])
+def get_pinned():
+    """Get all pinned sessions."""
+    sessions = get_pinned_sessions()
+    return jsonify(sessions)
+
+@app.route("/api/sessions/<int:session_id>/rename", methods=["PUT"])
+def rename_session_endpoint(session_id):
+    """Rename a session."""
+    data = request.json
+    new_name = data.get("name")
+    if not new_name:
+        return jsonify({"error": "New name is required"}), 400
+        
+    success = rename_session(session_id, new_name)
+    return jsonify({"success": success})
+
+# ------------------------------------------------------------------
+# API: Prompt Library
+# ------------------------------------------------------------------
+@app.route("/api/prompts", methods=["GET", "POST"])
+def manage_prompts():
+    """Manage usage prompts."""
+    if request.method == "POST":
+        data = request.json
+        title = data.get("title")
+        content = data.get("content")
+        tags = data.get("tags", "")
+        if not title or not content:
+            return jsonify({"error": "Missing title or content"}), 400
+        
+        prompt_id = create_prompt(title, content, tags)
+        return jsonify({"success": True, "id": prompt_id})
+    else:
+        prompts = get_all_prompts()
+        return jsonify(prompts)
+
+@app.route("/api/prompts/<int:prompt_id>", methods=["DELETE"])
+def delete_prompt_endpoint(prompt_id):
+    """Delete a prompt."""
+    success = delete_prompt(prompt_id)
+    return jsonify({"success": success})
+
+
+# ------------------------------------------------------------------
+# API: Global Search
+# ------------------------------------------------------------------
+@app.route("/api/search", methods=["GET"])
+def global_search():
+    """Search sessions, messages, and files."""
+    query = request.args.get("q", "").lower()
+    if len(query) < 2:
+        return jsonify({"sessions": [], "messages": [], "files": []})
+        
+    # 1. Database Search (Sessions & Messages)
+    db_results = search_chat_data(query)
+    
+    # 2. File System Search
+    found_files = []
+    if os.path.exists(UPLOAD_DIR):
+        for filename in os.listdir(UPLOAD_DIR):
+            if query in filename.lower():
+                found_files.append(filename)
+                
+    return jsonify({
+        "sessions": db_results["sessions"],
+        "messages": db_results["messages"],
+        "files": found_files
+    })
 
 
 if __name__ == "__main__":

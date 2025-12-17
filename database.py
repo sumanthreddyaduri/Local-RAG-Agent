@@ -71,6 +71,27 @@ def init_db():
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_messages_created ON chat_messages(created_at)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_sessions_updated ON chat_sessions(updated_at)')
+        
+        # ---------------------------------------------------------
+        # MIGRATION: Add is_pinned to chat_sessions if not exists
+        # ---------------------------------------------------------
+        try:
+            cursor.execute('ALTER TABLE chat_sessions ADD COLUMN is_pinned BOOLEAN DEFAULT 0')
+        except sqlite3.OperationalError:
+            pass # Column likely exists already
+            
+        # ---------------------------------------------------------
+        # NEW TABLE: Prompt Library
+        # ---------------------------------------------------------
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS prompt_library (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tags TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
 
 
 def create_session(name=None, model_used=None):
@@ -228,3 +249,83 @@ def search_messages(query, limit=20):
 
 # Initialize database on module import
 init_db()
+
+
+# ---------------------------------------------------------
+# NEW: Pinned Sessions Logic
+# ---------------------------------------------------------
+def toggle_pin_session(session_id, is_pinned):
+    """Toggle the pinned status of a session."""
+    with _lock:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE chat_sessions SET is_pinned = ? WHERE id = ?',
+                (1 if is_pinned else 0, session_id)
+            )
+            return cursor.rowcount > 0
+
+def get_pinned_sessions():
+    """Get all pinned sessions."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM chat_sessions WHERE is_pinned = 1 ORDER BY updated_at DESC')
+        return [dict(row) for row in cursor.fetchall()]
+
+# ---------------------------------------------------------
+# NEW: Prompt Library Logic
+# ---------------------------------------------------------
+def create_prompt(title, content, tags=""):
+    """Create a new saved prompt."""
+    with _lock:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'INSERT INTO prompt_library (title, content, tags) VALUES (?, ?, ?)',
+                (title, content, tags)
+            )
+            return cursor.lastrowid
+
+def get_all_prompts():
+    """Get all saved prompts."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM prompt_library ORDER BY created_at DESC')
+        return [dict(row) for row in cursor.fetchall()]
+
+def delete_prompt(prompt_id):
+    """Delete a prompt by ID."""
+    with _lock:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM prompt_library WHERE id = ?', (prompt_id,))
+            return cursor.rowcount > 0
+
+
+def search_chat_data(query):
+    """Search for sessions and messages matching the query."""
+    results = {"sessions": [], "messages": []}
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # 1. Search Sessions
+        cursor.execute(
+            "SELECT * FROM chat_sessions WHERE name LIKE ? ORDER BY updated_at DESC", 
+            (f'%{query}%',)
+        )
+        results["sessions"] = [dict(row) for row in cursor.fetchall()]
+        
+        # 2. Search Messages
+        cursor.execute(
+            '''SELECT m.*, s.name as session_name 
+               FROM chat_messages m 
+               JOIN chat_sessions s ON m.session_id = s.id
+               WHERE m.content LIKE ? 
+               ORDER BY m.created_at DESC 
+               LIMIT 50''',
+            (f'%{query}%',)
+        )
+        results["messages"] = [dict(row) for row in cursor.fetchall()]
+        
+    return results

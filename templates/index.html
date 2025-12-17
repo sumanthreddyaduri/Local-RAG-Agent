@@ -287,28 +287,64 @@
             border-radius: 12px;
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
             width: 100%;
-            max-width: 600px;
+            max-width: 1400px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 25px;
         }
 
-        .control-card h2 {
-            margin-top: 0;
-            margin-bottom: 25px;
+        /* Responsive: Stack on mobile/tablet */
+        @media (max-width: 900px) {
+            .control-card {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .settings-header {
             display: flex;
+            justify-content: space-between;
             align-items: center;
+            grid-column: 1 / -1;
+            margin-bottom: 16px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .settings-header h2 {
+            margin: 0 !important;
+            padding-bottom: 0 !important;
+            border-bottom: none !important;
+            flex-shrink: 0;
+            /* Prevent wrapping */
+        }
+
+        .settings-header-actions {
+            display: flex;
             gap: 10px;
+            align-items: center;
+        }
+
+        .settings-header-actions button {
+            margin: 0 !important;
+            width: auto !important;
+            /* Override primary-btn width 100% */
         }
 
         /* Settings Sections */
         .settings-section {
-            margin-bottom: 25px;
-            padding-bottom: 20px;
-            border-bottom: 1px solid var(--border-color);
+            background: rgba(255, 255, 255, 0.03);
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            margin-bottom: 0;
+            /* Remove bottom margin in grid */
+            height: 100%;
+            /* Match grid height */
         }
 
         .settings-section:last-child {
-            border-bottom: none;
-            margin-bottom: 0;
-            padding-bottom: 0;
+            border-bottom: 1px solid var(--border-color);
+            /* Restore border */
         }
 
         .settings-section h3 {
@@ -1279,7 +1315,7 @@
             color: white;
             padding: 12px 20px;
             border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
             display: flex;
             align-items: center;
             gap: 10px;
@@ -1287,19 +1323,44 @@
             min-width: 250px;
         }
 
-        .toast.success { background: #28a745; }
-        .toast.error { background: #dc3545; }
-        .toast.warning { background: #ffc107; color: #333; }
-        .toast.info { background: #17a2b8; }
+        .toast.success {
+            background: #28a745;
+        }
+
+        .toast.error {
+            background: #dc3545;
+        }
+
+        .toast.warning {
+            background: #ffc107;
+            color: #333;
+        }
+
+        .toast.info {
+            background: #17a2b8;
+        }
 
         @keyframes slideIn {
-            from { transform: translateX(100%); opacity: 0; }
-            to { transform: translateX(0); opacity: 1; }
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
         }
 
         @keyframes fadeOut {
-            from { opacity: 1; }
-            to { opacity: 0; transform: translateX(100%); }
+            from {
+                opacity: 1;
+            }
+
+            to {
+                opacity: 0;
+                transform: translateX(100%);
+            }
         }
 
         /* Confirm Modal */
@@ -1392,7 +1453,8 @@
             position: relative;
             min-width: 180px;
             max-width: 400px;
-            transition: none; /* Disable transition during resize */
+            transition: none;
+            /* Disable transition during resize */
         }
 
         .sidebar-resize-handle {
@@ -1417,7 +1479,62 @@
 <body>
     <!-- Toast Container for notifications -->
     <div id="toast-container"></div>
-    
+
+    <!-- Prompt Library Modal -->
+    <div id="prompt-modal" class="modal"
+        style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 2000; align-items: center; justify-content: center;">
+        <div class="modal-content"
+            style="background: var(--bg-secondary); width: 600px; max-width: 90%; max-height: 80vh; border-radius: 12px; border: 1px solid var(--border-color); display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.5);">
+            <div class="modal-header"
+                style="padding: 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="margin: 0;">📝 Prompt Library</h3>
+                <button onclick="document.getElementById('prompt-modal').style.display='none'"
+                    style="background:none; border:none; color:var(--text-color); font-size: 20px; cursor: pointer;">&times;</button>
+            </div>
+
+            <div class="modal-body" style="padding: 20px; overflow-y: auto;">
+                <!-- New Prompt Form -->
+                <div style="background: rgba(0,0,0,0.1); padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                    <h4 style="margin-top: 0; margin-bottom: 10px;">Save New Prompt</h4>
+                    <input type="text" id="new-prompt-title" placeholder="Prompt Title (e.g. 'Code Reviewer')"
+                        style="width: 100%; margin-bottom: 10px; background: var(--bg-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 8px; border-radius: 6px;">
+                    <textarea id="new-prompt-content" placeholder="Enter system prompt or instruction..."
+                        style="width: 100%; height: 80px; background: var(--bg-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 8px; border-radius: 6px; resize: vertical; margin-bottom: 10px;"></textarea>
+                    <button class="primary-btn" onclick="savePrompt()">💾 Save Prompt</button>
+                </div>
+
+                <!-- Prompt List -->
+                <h4 style="border-bottom: 1px solid var(--border-color); padding-bottom: 5px;">Saved Prompts</h4>
+                <div id="prompt-list" style="display: flex; flex-direction: column; gap: 10px; margin-top: 10px;">
+                    <!-- Prompts injected here -->
+                    <div style="text-align: center; padding: 20px; color: var(--text-muted);">Loading prompts...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Search Results Modal -->
+    <div id="search-modal" class="modal"
+        style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 2000; align-items: start; justify-content: center; padding-top: 80px;">
+        <div class="modal-content"
+            style="background: var(--bg-secondary); width: 700px; max-width: 90%; max-height: 80vh; border-radius: 12px; border: 1px solid var(--border-color); display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.5);">
+            <div class="modal-header"
+                style="padding: 15px 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="margin: 0;">🔍 Search Results</h3>
+                <button onclick="document.getElementById('search-modal').style.display='none'"
+                    style="background:none; border:none; color:var(--text-color); font-size: 20px; cursor: pointer;">&times;</button>
+            </div>
+            <div id="search-results-body" class="modal-body" style="padding: 0; overflow-y: auto;">
+                <!-- Results injected here -->
+                <div style="padding: 20px; text-align: center; color: var(--text-muted);">Enter a query to search...
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="{{ url_for('static', filename='js/app.js') }}?v=2"></script>
+
     <!-- Confirm Modal -->
     <div id="confirm-modal" class="modal-overlay" style="display: none;">
         <div class="modal-content">
@@ -1428,7 +1545,21 @@
             </div>
         </div>
     </div>
-    
+
+    <!-- Rename Session Modal -->
+    <div id="rename-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content">
+            <h3>Rename Chat</h3>
+            <input type="text" id="rename-input" placeholder="New Session Name"
+                style="width: 100%; padding: 10px; margin-bottom: 20px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-color);">
+            <div class="modal-buttons">
+                <button class="modal-btn cancel" onclick="closeRenameModal()">Cancel</button>
+                <button class="modal-btn confirm" id="rename-confirm-btn"
+                    style="background: var(--accent-color);">Save</button>
+            </div>
+        </div>
+    </div>
+
     <header>
         <div class="logo">
             🎛️ RAG Agent Control Room
@@ -1437,17 +1568,23 @@
             <span class="status-dot loading" id="status-dot"></span>
             <span id="status-text">Checking...</span>
         </div>
+        <!-- Global Search (Centered Absolutely) -->
+        <div class="global-search-wrapper"
+            style="position: absolute; left: 50%; transform: translateX(-50%); width: 400px; max-width: 40%;">
+            <input type="text" id="global-search-input" placeholder="Search everything..."
+                onkeydown="handleGlobalSearch(event)"
+                style="width: 100%; padding: 8px 20px; border-radius: 20px; border: 1px solid var(--border-color); background: rgba(0,0,0,0.05); color: var(--text-color); transition: all 0.3s; font-size: 0.9em; text-align: center;">
+            <span
+                style="position: absolute; right: 15px; top: 50%; transform: translateY(-50%); opacity: 0.5; font-size: 0.9em; pointer-events: none;">🔍</span>
+        </div>
         <div class="top-actions">
             <button class="nav-btn" id="btn-toggle" onclick="toggleMode()">💬 Chat Mode</button>
             <button class="nav-btn" onclick="showView('dashboard')">📊 Dashboard</button>
             <button class="nav-btn" onclick="showView('controls')">📂 Controls</button>
             <button class="nav-btn" onclick="showView('files')">📁 Files</button>
 
-            <button class="nav-btn" onclick="toggleTheme()" title="Toggle Theme">
-                <span id="theme-icon">🌙</span>
-            </button>
-
             <button class="nav-btn" onclick="showView('settings')">⚙️ Settings</button>
+            <!-- Moved Theme Toggle to Settings View Bottom -->
         </div>
     </header>
 
@@ -1460,9 +1597,14 @@
                 {% for session in sessions %}
                 <div class="history-item {% if session.id == current_session_id %}active{% endif %}"
                     onclick="switchSession({{ session.id }})" data-id="{{ session.id }}">
-                    <span>{{ session.name }}</span>
-                    <button class="delete-btn"
-                        onclick="event.stopPropagation(); deleteSession({{ session.id }})">🗑️</button>
+                    <span class="session-name" title="{{ session.name }}">{{ session.name }}</span>
+                    <div class="session-actions" style="display: flex; gap: 5px;">
+                        <button class="icon-btn tiny"
+                            onclick="event.stopPropagation(); openRenameModal({{ session.id }}, '{{ session.name|replace("'", "\\'") }}')"
+                            title="Rename">✏️</button>
+                        <button class="delete-btn"
+                            onclick="event.stopPropagation(); deleteSession({{ session.id }})">🗑️</button>
+                    </div>
                 </div>
                 {% else %}
                 <div class="history-item active">Current Session</div>
@@ -1471,7 +1613,14 @@
 
             <!-- Resize Handle -->
             <div class="sidebar-resize-handle" id="sidebar-resize-handle"></div>
+
+            <!-- Version Display -->
+            <div class="version-display"
+                style="position: absolute; bottom: 10px; left: 15px; font-size: 0.75em; color: var(--text-secondary, #888); opacity: 0.7;">
+                Version 1.0.0
+            </div>
         </aside>
+
 
         <main class="main-content">
 
@@ -1499,8 +1648,113 @@
                         </div>
                     </div>
 
-                    <div class="chart-container">
-                        <canvas id="usageChart"></canvas>
+                    <!-- ==============================================
+                         IRON MAN DASHBOARD: COMMAND CENTER
+                         ============================================== -->
+
+                    <!-- 1. Rapid Launchpad (Quick Actions) -->
+                    <div class="launchpad-grid"
+                        style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 30px;">
+                        <button class="launch-btn" onclick="newChat()"
+                            style="background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); color: white; padding: 20px; border-radius: 12px; border: none; cursor: pointer; text-align: left; transition: transform 0.2s; box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);">
+                            <div style="font-size: 24px; margin-bottom: 10px;">➕</div>
+                            <div style="font-weight: 600; font-size: 1.1em;">New Chat</div>
+                            <div style="font-size: 0.8em; opacity: 0.8;">Start fresh research</div>
+                        </button>
+
+                        <button class="launch-btn" onclick="showView('files')"
+                            style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; padding: 20px; border-radius: 12px; border: none; cursor: pointer; text-align: left; transition: transform 0.2s; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);">
+                            <div style="font-size: 24px; margin-bottom: 10px;">📂</div>
+                            <div style="font-weight: 600; font-size: 1.1em;">Knowledge Base</div>
+                            <div style="font-size: 0.8em; opacity: 0.8;">Upload & manage files</div>
+                        </button>
+
+                        <button class="launch-btn" onclick="openPromptLibrary()"
+                            style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: white; padding: 20px; border-radius: 12px; border: none; cursor: pointer; text-align: left; transition: transform 0.2s; box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);">
+                            <div style="font-size: 24px; margin-bottom: 10px;">📝</div>
+                            <div style="font-weight: 600; font-size: 1.1em;">Prompt Library</div>
+                            <div style="font-size: 0.8em; opacity: 0.8;">Access saved templates</div>
+                        </button>
+                    </div>
+
+                    <div class="dashboard-grid-layout"
+                        style="display: grid; grid-template-columns: 2fr 1fr; gap: 20px;">
+
+                        <!-- LEFT COLUMN -->
+                        <div class="dashboard-left-col">
+
+                            <!-- 2. Knowledge Visualizer (Graph) -->
+                            <div class="visualizer-card"
+                                style="background: rgba(0,0,0,0.2); border-radius: 12px; padding: 20px; border: 1px solid var(--border-color); margin-bottom: 20px; height: 300px; position: relative; overflow: hidden;">
+                                <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                                    <h3 style="margin:0;">🧠 Knowledge Graph</h3>
+                                    <button class="icon-btn" onclick="refreshGraph()" title="Refresh Graph">🔄</button>
+                                </div>
+                                <div id="knowledge-graph"
+                                    style="width: 100%; height: 240px; background: rgba(0,0,0,0.1); border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--text-muted);">
+                                    <!-- Graph will be rendered here by D3/JS -->
+                                    <span>Initiating Neural Link... (Graph Placeholder)</span>
+                                </div>
+                            </div>
+
+                            <!-- 3. Recent Activity Feed (Existing) -->
+                            <div class="activity-feed-section">
+                                <h3
+                                    style="margin-bottom: 15px; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">
+                                    📰 Recent Activity</h3>
+                                <div class="activity-list" style="display: flex; flex-direction: column; gap: 10px;">
+                                    {% if recent_activity %}
+                                    {% for session in recent_activity %}
+                                    <div class="activity-card"
+                                        style="background: rgba(255,255,255,0.05); padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+                                        <div class="activity-info">
+                                            <div style="font-weight: 600; color: var(--text-color);">{{ session.name }}
+                                            </div>
+                                            <div style="font-size: 0.85em; color: var(--text-secondary);">Last updated:
+                                                {{ session.updated_at }}</div>
+                                        </div>
+                                        <div class="activity-meta" style="text-align: right;">
+                                            <button class="icon-btn" onclick="togglePin({{ session.id }}, true)"
+                                                title="Pin Chat">📌</button>
+                                            <button class="icon-btn"
+                                                onclick="switchSession({{ session.id }}); showView('chat');"
+                                                title="Resume Chat" style="margin-left: 5px;">➡️</button>
+                                        </div>
+                                    </div>
+                                    {% endfor %}
+                                    {% else %}
+                                    <div class="empty-activity">No recent activity.</div>
+                                    {% endif %}
+                                </div>
+                            </div>
+
+                        </div>
+
+                        <!-- RIGHT COLUMN -->
+                        <div class="dashboard-right-col">
+
+                            <!-- 4. Pinned Chats (Gallery) -->
+                            <div class="pinned-section" style="margin-bottom: 20px;">
+                                <h3 style="margin-bottom: 10px;">📌 Pinned Chats</h3>
+                                <div id="pinned-chats-container"
+                                    style="display: flex; flex-direction: column; gap: 10px;">
+                                    {% if pinned_sessions %}
+                                    {% for chat in pinned_sessions %}
+                                    <div class="pinned-card" onclick="switchSession({{ chat.id }}); showView('chat');"
+                                        style="background: var(--card-bg); padding: 12px; border-radius: 8px; border-left: 3px solid var(--accent-color); cursor: pointer; transition: transform 0.2s;">
+                                        <div style="font-weight: 500;">{{ chat.name }}</div>
+                                        <div style="font-size: 0.8em; color: var(--text-secondary);">{{ chat.model_used
+                                            }}</div>
+                                    </div>
+                                    {% endfor %}
+                                    {% else %}
+                                    <div style="font-size: 0.9em; color: var(--text-muted); font-style: italic;">No
+                                        pinned chats yet.</div>
+                                    {% endif %}
+                                </div>
+                            </div>
+
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1534,11 +1788,11 @@
                     <div class="settings-section">
                         <h3>🔄 Mode Control</h3>
                         <div class="mode-buttons">
-                            <button class="mode-btn {{ 'active' if config.mode == 'cli' else '' }}" 
+                            <button class="mode-btn {{ 'active' if config.mode == 'cli' else '' }}"
                                 onclick="setMode('cli')" id="cli-mode-btn">
                                 💻 CLI Mode
                             </button>
-                            <button class="mode-btn {{ 'active' if config.mode == 'browser' else '' }}" 
+                            <button class="mode-btn {{ 'active' if config.mode == 'browser' else '' }}"
                                 onclick="setMode('browser')" id="browser-mode-btn">
                                 🌐 Browser Mode
                             </button>
@@ -1548,6 +1802,11 @@
                     <!-- Quick Actions -->
                     <div class="settings-section">
                         <h3>⚡ Quick Actions</h3>
+                        <div class="header-left"
+                            style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                            <button id="sidebar-toggle" class="icon-btn" onclick="toggleSidebar()"
+                                aria-label="Toggle Sidebar">☰</button>
+                        </div>
                         <div class="btn-row">
                             <button class="primary-btn" onclick="showView('files')">📁 Manage Files</button>
                             <button class="primary-btn" onclick="showView('settings')">⚙️ Settings</button>
@@ -1573,7 +1832,15 @@
             <!-- Settings View -->
             <div id="settings-view" class="view-section hidden">
                 <div class="control-card">
-                    <h2>⚙️ Settings</h2>
+                    <div class="settings-header">
+                        <h2>⚙️ Settings</h2>
+                        <div class="settings-header-actions">
+                            <button class="primary-btn" id="save-settings-btn" onclick="saveAllSettings()"
+                                style="padding: 6px 15px; font-size: 0.9em;">💾 Save All</button>
+                            <button class="primary-btn danger-btn" id="reset-settings-btn" onclick="resetSettings()"
+                                style="padding: 6px 15px; font-size: 0.9em;">🔄 Reset</button>
+                        </div>
+                    </div>
 
                     <!-- Model Settings -->
                     <div class="settings-section">
@@ -1696,10 +1963,51 @@
                         </div>
                     </div>
 
-                    <!-- Reset Settings -->
-                    <div class="btn-row">
-                        <button class="primary-btn" onclick="saveAllSettings()">💾 Save All</button>
-                        <button class="primary-btn danger-btn" onclick="resetSettings()">🔄 Reset Defaults</button>
+                    <!-- Theme & Nav Controls (Moved Here) -->
+                    <div class="settings-section">
+                        <h3>🎨 Appearance & Navigation</h3>
+                        <div class="setting-row">
+                            <div class="setting-label">
+                                <span>Theme Mode</span>
+                                <small>Toggle light/dark mode</small>
+                            </div>
+                            <button class="nav-btn" id="theme-toggle-settings" onclick="toggleTheme()"
+                                title="Toggle Theme" style="width: auto; padding: 8px 15px; background: #3d3d3d;">
+                                <span id="theme-icon" style="margin-right: 8px;">🌙</span> Switch Theme
+                            </button>
+                        </div>
+
+                        <div class="setting-row">
+                            <div class="setting-label">
+                                <span>Accent Color</span>
+                                <small>Customize primary brand color</small>
+                            </div>
+                            <div class="color-picker-row" style="display: flex; gap: 10px;">
+                                <button class="color-dot active"
+                                    style="background-color: #6366f1; border: 2px solid white; box-shadow: 0 0 0 2px #6366f1;"
+                                    onclick="setAccentColor('#6366f1', this)" aria-label="Indigo"></button>
+                                <button class="color-dot" style="background-color: #10b981;"
+                                    onclick="setAccentColor('#10b981', this)" aria-label="Emerald"></button>
+                                <button class="color-dot" style="background-color: #f59e0b;"
+                                    onclick="setAccentColor('#f59e0b', this)" aria-label="Amber"></button>
+                                <button class="color-dot" style="background-color: #ec4899;"
+                                    onclick="setAccentColor('#ec4899', this)" aria-label="Pink"></button>
+                                <button class="color-dot" style="background-color: #3b82f6;"
+                                    onclick="setAccentColor('#3b82f6', this)" aria-label="Blue"></button>
+                            </div>
+                        </div>
+
+                        <div class="setting-row">
+                            <div class="setting-label">
+                                <span>Compact Mode</span>
+                                <small>Reduce spacing for higher information density</small>
+                            </div>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="compact-mode-toggle"
+                                    onchange="toggleCompactMode(this.checked)">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1783,7 +2091,8 @@
                         </div>
 
                         <!-- Index Management -->
-                        <div class="index-management-section" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--border-color);">
+                        <div class="index-management-section"
+                            style="margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--border-color);">
                             <h3 style="margin-bottom: 15px;">🗑️ Index Management</h3>
                             <button class="primary-btn danger-btn" onclick="clearIndex()" style="width: auto;">
                                 Clear All Indexed Documents
@@ -1821,7 +2130,8 @@
             <!-- Chat View -->
             <div id="chat-view" class="view-section hidden">
                 <div class="chat-messages" id="chat-history">
-                    <div class="chat-message bot-message">👋 Hello! I'm your RAG assistant. Ask me questions about your documents or just chat with me. Use the sidebar to manage your chat sessions.</div>
+                    <div class="chat-message bot-message">👋 Hello! I'm your RAG assistant. Ask me questions about your
+                        documents or just chat with me. Use the sidebar to manage your chat sessions.</div>
                     {% for role, msg in chat_history %}
                     <div class="chat-message {{ 'user-message' if role == 'User' else 'bot-message' }}">{{ msg }}</div>
                     {% endfor %}
@@ -2241,7 +2551,7 @@
         function showSessionContextMenu(event, sessionId, sessionName) {
             event.preventDefault();
             event.stopPropagation();
-            
+
             const menu = document.getElementById('context-menu');
             menu.innerHTML = `
                 <div class="context-menu-item" onclick="exportSession(${sessionId}, '${sessionName}', 'txt')">
@@ -2385,18 +2695,18 @@
         function newChat() {
             // Lazy session creation - don't create in DB until first message is sent
             currentSessionId = null;
-            
+
             // Clear chat UI
             const historyContainer = document.getElementById('chat-history');
             if (historyContainer) {
                 historyContainer.innerHTML = '<div class="empty-state"><p>Start a new conversation</p></div>';
             }
-            
+
             // Update sidebar to show no active session
             document.querySelectorAll('.history-item').forEach(item => {
                 item.classList.remove('active');
             });
-            
+
             showView('chat');
             showToast('New chat ready', 'success');
         }
@@ -2413,13 +2723,13 @@
             document.getElementById('confirm-modal-message').textContent = message;
             const modal = document.getElementById('confirm-modal');
             const okBtn = document.getElementById('confirm-modal-ok');
-            
+
             // Replace OK button click handler
-            okBtn.onclick = function() {
+            okBtn.onclick = function () {
                 hideConfirmModal();
                 onConfirm();
             };
-            
+
             modal.style.display = 'flex';
         }
 
@@ -2429,10 +2739,10 @@
 
         function deleteSession(id, event) {
             if (event) event.stopPropagation();
-            
+
             const sessionId = parseInt(id);
-            
-            showConfirmModal('Delete this chat session? This cannot be undone.', async function() {
+
+            showConfirmModal('Delete this chat session? This cannot be undone.', async function () {
                 console.log('Deleting session:', sessionId);
 
                 try {
@@ -2589,7 +2899,7 @@
 
         // Initial Load
         loadSessions();
-        
+
         // Show default view or last used view
         (function initDefaultView() {
             const lastView = localStorage.getItem('lastView');
@@ -2616,7 +2926,7 @@
                 }
             }
 
-            handle.addEventListener('mousedown', function(e) {
+            handle.addEventListener('mousedown', function (e) {
                 isResizing = true;
                 handle.classList.add('active');
                 document.body.style.cursor = 'ew-resize';
@@ -2624,7 +2934,7 @@
                 e.preventDefault();
             });
 
-            document.addEventListener('mousemove', function(e) {
+            document.addEventListener('mousemove', function (e) {
                 if (!isResizing) return;
                 const newWidth = e.clientX;
                 if (newWidth >= MIN_WIDTH && newWidth <= MAX_WIDTH) {
@@ -2632,7 +2942,7 @@
                 }
             });
 
-            document.addEventListener('mouseup', function() {
+            document.addEventListener('mouseup', function () {
                 if (isResizing) {
                     isResizing = false;
                     handle.classList.remove('active');
@@ -2650,12 +2960,12 @@
             if (!confirm('Are you sure you want to clear ALL indexed documents? This cannot be undone.')) {
                 return;
             }
-            
+
             showToast('Clearing index...', 'info');
             try {
                 const response = await fetch('/api/index/clear', { method: 'POST' });
                 const data = await response.json();
-                
+
                 if (data.status === 'success') {
                     showToast('Index cleared successfully', 'success');
                     loadStats();
@@ -2677,17 +2987,17 @@
                     body: JSON.stringify({ mode: mode })
                 });
                 const data = await response.json();
-                
+
                 if (data.status === 'success' || response.ok) {
                     // Update UI
                     document.getElementById('current-mode').textContent = mode === 'browser' ? 'Browser' : 'CLI';
-                    document.getElementById('mode-status').innerHTML = 
+                    document.getElementById('mode-status').innerHTML =
                         `Mode: <strong>${mode === 'browser' ? 'Browser Chat' : 'CLI Chat'}</strong>`;
-                    
+
                     // Update button states
                     document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
                     document.getElementById(`${mode}-mode-btn`)?.classList.add('active');
-                    
+
                     showToast(`Switched to ${mode === 'browser' ? 'Browser' : 'CLI'} mode`, 'success');
                 } else {
                     showToast('Failed to switch mode', 'error');
