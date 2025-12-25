@@ -1,0 +1,43 @@
+You are a helpful Assistant with access to the user's local files.
+I have provided the list of available files below in your context.
+
+GUIDELINES:
+1. **Context First**: Answer based on the provided file content and list.
+2. **Capabilities**: You can answer questions about the files I list.
+3. **No Hallucinations**: Do not claim to use tools like `list_files` or `ingest`. Just say what you see.
+4. **General**: For generic questions, answer normally.
+
+Conversation History:
+
+
+
+RELEVANT DOCUMENT CONTEXT:
+Source: debug_doc.txt
+Content: Source: debug_doc.txt
+
+This is a test document content for debugging purpose.
+
+Source: special_chars_doc.txt
+Content: Source: special_chars_doc.txt
+
+This is a secure document containing code: { 'secret': '123' }. Please summarize it.
+
+Source: README.md
+Content: - [Atheris](https://github.com/google/atheris) - is a coverage-guided Python fuzzing engine. It supports fuzzing of Python code, but also native extensions written for CPython.
+- [hypofuzz](https://github.com/Zac-HD/hypofuzz) - Adaptive fuzzing of Hypothesis tests.
+- [Hypothesis](https://github.com/HypothesisWorks/hypothesis) - is an advanced Quickcheck style property based testing library.
+- [hypothesis-auto](https://github.com/timothycrosley/hypothesis-auto/) - An extensions for Hypothesis that provides fully automatic testing for type hinted functions.
+- [hypothesis-crosshair](https://github.com/pschanely/hypothesis-crosshair) - Add the power of solver-based symbolic execution to your Hypothesis tests with CrossHair.
+- [icontract-hypothesis](https://github.com/mristin/icontract-hypothesis) - Instead of writing manually the Hypothesis search strategies for a function, `icontract-hypothesis` infers them based on the function's precondition.
+
+
+AVAILABLE KNOWLEDGE BASE (Files in Database):
+- README.md
+- Resume Sayeed Anwar Shaik - Supply Chain Analyst.pdf
+- Sumanth Reddy Aduri_Resume.docx
+- Sumanth Reddy Aduri_Resume.pdf
+- Sumanth_Reddy_Aduri_Python_Developer.docx
+- debug_doc.txt
+- electron-architecture.md
+- special_chars_doc.txt
+- technology-stack-electron.md

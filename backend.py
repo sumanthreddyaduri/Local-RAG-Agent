@@ -234,6 +234,30 @@ def get_loader(file_path: str):
     return loaders[ext]()
 
 
+def load_document_content(file_path: str) -> str:
+    """
+    Load document content as plain text using LangChain loaders.
+    Same loaders used for RAG ingestion - ensures consistent parsing.
+    
+    Args:
+        file_path: Path to the document file
+        
+    Returns:
+        Extracted text content from the document
+    """
+    try:
+        loader = get_loader(file_path)
+        docs = loader.load()
+        # Combine all pages/chunks into single text
+        content = "\n\n".join([doc.page_content for doc in docs if doc.page_content.strip()])
+        return content if content else "(Document appears to be empty)"
+    except ValueError as e:
+        # Unsupported file type
+        return f"(Unsupported file type: {str(e)})"
+    except Exception as e:
+        return f"(Error reading document: {str(e)[:200]})"
+
+
 def ingest_files(file_paths: List[str]) -> Tuple[bool, str]:
     """
     Reads files, chunks them, and saves to Vector DB and BM25 index.
@@ -252,10 +276,12 @@ def ingest_files(file_paths: List[str]) -> Tuple[bool, str]:
         try:
             loader = get_loader(path)
             docs = loader.load()
-            # Add source metadata
+            # Add source metadata and prepend source to content for better retrieval
             for doc in docs:
                 doc.metadata['source'] = os.path.basename(path)
                 doc.metadata['full_path'] = path
+                # Prepend source to content so keyword search for filename matches the document
+                doc.page_content = f"Source: {os.path.basename(path)}\n\n{doc.page_content}"
             all_docs.extend(docs)
         except Exception as e:
             failed_files.append(f"{os.path.basename(path)}: {str(e)}")

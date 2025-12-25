@@ -2,11 +2,14 @@
 Enhanced Flask Application with Persistent Chat Memory, Health Checks, and Improved Error Handling.
 """
 
-from flask import Flask, render_template, request, redirect, url_for, jsonify, Response
+from flask import Flask, render_template, request, redirect, url_for, jsonify, Response, send_from_directory
 import os
+import time
 import json
 import traceback
-from backend import ingest_files, get_rag_chain, clear_index, get_indexed_files, get_index_stats
+import base64
+from datetime import datetime
+from backend import ingest_files, get_rag_chain, clear_index, get_indexed_files, get_index_stats, load_document_content
 from config_manager import load_config, save_config, update_config, DEFAULT_CONFIG, validate_config
 from database import (
     get_or_create_default_session, create_session, get_all_sessions,
@@ -15,15 +18,24 @@ from database import (
     toggle_pin_session, get_pinned_sessions,
     create_prompt, get_all_prompts, delete_prompt, search_chat_data
 )
+
 from health_check import check_ollama_health, check_model_available, get_system_status
+from models_manager import list_models, delete_model, pull_model_stream
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from PIL import Image
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 from PIL import Image
 import pytesseract
 
+from tools import TOOL_REGISTRY, TOOL_DEFINITIONS
+from security import analyze_tool_call, DESTRUCTIVE_ACTIONS
+
 app = Flask(__name__)
-UPLOAD_DIR = "./uploaded_files"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploaded_files")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Current active session (thread-safe would require Flask-Login or similar in production)
@@ -73,9 +85,18 @@ def chat():
     """Handle chat messages with persistent history and streaming responses."""
     try:
         data = request.json
-        query = data.get("message", "").strip()
+        print(f"[DEBUG] /chat request received. Files: {len(data.get('files', []))}", flush=True)
         
-        if not query:
+        query = data.get("message", "").strip()
+        files = data.get("files", [])  # Unified: {type, name, data, addToRag}
+        
+        # Separate files by type
+        images = [f for f in files if f.get("type") == "image"]
+        documents = [f for f in files if f.get("type") == "document"]
+        
+
+        
+        if not query and not files:
             return jsonify({"error": "Empty message"}), 400
         
         config = load_config()
@@ -90,7 +111,103 @@ def chat():
         if not health["available"]:
             return jsonify({"error": f"Ollama is not available: {health['error']}"}), 503
         
+        # === DOCUMENT PROCESSING (Background - uses embedding model) ===
+        docs_ingested = False
+        temp_doc_content = []  # For docs not added to RAG (temp analysis)
+        
+        if documents:
+            print(f"[DEBUG] Processing {len(documents)} documents", flush=True)
+            rag_paths = []  # Docs to ingest into RAG
+            
+            for doc in documents:
+                try:
+                    doc_name = doc.get("name", "uploaded_doc.txt")
+                    doc_data = doc.get("data", "")
+                    add_to_rag = doc.get("addToRag", False)
+                    
+                    # Extract base64 data (remove header if present)
+                    if "," in doc_data:
+                        doc_data = doc_data.split(",")[1]
+                    
+                    # Decode and save
+                    file_bytes = base64.b64decode(doc_data)
+                    file_path = os.path.join(UPLOAD_DIR, doc_name)
+                    with open(file_path, "wb") as f:
+                        f.write(file_bytes)
+                    
+                    if add_to_rag:
+                        rag_paths.append(file_path)
+                    else:
+                        # For temp analysis, use same loaders as RAG system
+                        content = load_document_content(file_path)
+                        print(f"[DEBUG] Loaded temp doc '{doc_name}': {len(content)} chars", flush=True)
+                        temp_doc_content.append(f"[Document: {doc_name}]\n{content[:8000]}")
+                            
+                except Exception as e:
+                    print(f"Error processing document {doc.get('name')}: {e}")
+            
+            # Ingest RAG documents with embedding model
+            if rag_paths:
+                success, msg = ingest_files(rag_paths)
+                if success:
+                    docs_ingested = True
+                    print(f"Chat documents ingested to RAG: {msg}")
+                else:
+                    print(f"Failed to ingest chat documents: {msg}")
+        
         retriever, llm = get_rag_chain(model_name)
+        
+        # === VISION PATH (Two-Stage Pipeline) ===
+        # 1. Internal Vision AI extracts context (Description)
+        # 2. Description is fed to Foreground LLM as context
+        vision_context = ""
+        if images:
+            try:
+                print("[DEBUG] Processing images with Vision AI (moondream)...", flush=True)
+                # Clean Base64 strings
+                cleaned_images = []
+                for img_file in images:
+                    try:
+                        img_data = img_file.get("data", "")
+                        if "," in img_data:
+                            img_data = img_data.split(",")[1]
+                        
+                        # Save to disk for serving
+                        raw_name = img_file.get("name", f"image_{int(time.time())}.png")
+                        img_name = os.path.basename(raw_name)  # Simple sanitization
+                        img_path = os.path.join(UPLOAD_DIR, img_name)
+                        
+                        with open(img_path, "wb") as f:
+                            f.write(base64.b64decode(img_data))
+                        
+                        cleaned_images.append(img_data)
+                    except Exception as e:
+                        print(f"[ERROR] Failed to save image {img_file.get('name')}: {e}", flush=True)
+                        continue
+                
+                # Call Vision Model (moondream)
+                # We use a dedicated instance for vision to ensure capacity
+                vision_llm = ChatOllama(model="moondream", base_url=config.get("ollama_host", "http://localhost:11434"))
+                
+                vision_messages = [
+                    HumanMessage(
+                        content="Describe this image. List prominent colors, objects, and any text visible.", 
+                        additional_kwargs={"images": cleaned_images}
+                    )
+                ]
+                
+                # Get Description
+                vision_response = vision_llm.invoke(vision_messages)
+                description = vision_response.content
+                print(f"[DEBUG] Vision AI Description: {description[:100]}...", flush=True)
+                
+                vision_context = f"\n\n[HIDDEN CONTEXT FROM VISION AI]\nThe user has attached images. Here is the internal description of those images:\n{description}\n(The user cannot see this description directly. Use it to answer their questions about the image.)\n"
+                
+            except Exception as e:
+                print(f"[ERROR] Vision processing failed: {e}", flush=True)
+                vision_context = f"\n\n[SYSTEM ERROR] Failed to process attached images: {str(e)}"
+
+        # === STANDARD TEXT/RAG PATH (Now includes Vision Context) ===
         
         # Get conversation history from database
         history_text = format_history_for_prompt(session_id, max_history)
@@ -106,121 +223,297 @@ USER QUERY:
 {query}"""
         
         # Intent detection: Check if query needs document context
-        greeting_patterns = ['hello', 'hi', 'hey', 'good morning', 'good evening', 'good afternoon', 
-                            'how are you', 'what\'s up', 'thanks', 'thank you', 'bye', 'goodbye',
-                            'who are you', 'what can you do', 'help me']
+        # Intent detection: Check if query needs document context
+        import re
+        greeting_patterns = [r'\bhello\b', r'\bhi\b', r'\bhey\b', r'\bgood morning\b', r'\bgood evening\b', 
+                            r'\bgood afternoon\b', r'\bhow are you\b', r'\bwhats up\b', r'\bthanks\b', 
+                            r'\bthank you\b', r'\bbye\b', r'\bgoodbye\b', r'\bwho are you\b', 
+                            r'\bwhat can you do\b', r'\bhelp me\b']
+        
         query_lower = query.lower().strip()
-        is_greeting_or_meta = any(pattern in query_lower for pattern in greeting_patterns) and len(query_lower) < 50
+        # Use regex to match whole words/phrases
+        is_greeting = any(re.search(pattern, query_lower) for pattern in greeting_patterns)
+        is_greeting_or_meta = is_greeting and len(query_lower) < 50
         
         # Document-specific keywords - triggers RAG only when user explicitly mentions documents
         doc_keywords = ['document', 'file', 'uploaded', 'indexed', 'my files', 'in the context',
                         'according to', 'based on', 'from the', 'in my', 'search my', 'find in',
                         'what does the document say', 'summary of', 'readme', 'pdf', 'txt', 'csv']
-        needs_rag = any(keyword in query_lower for keyword in doc_keywords) and not is_greeting_or_meta
+        needs_rag = (any(keyword in query_lower for keyword in doc_keywords) or docs_ingested) and not is_greeting_or_meta
         
-        if retriever is None or is_greeting_or_meta:
-            # Conversational mode - no document context
-            template = """You are a helpful, friendly AI assistant powered by a RAG (Retrieval-Augmented Generation) system.
+        # ==========================================
+        # AGENTIC LOOP IMPLEMENTATION (Phase 1.2)
+        # ==========================================
+        
+        # Models that act as pure chat/RAG only (no agentic tools)
+        NON_TOOL_MODELS = ["gemma2:2b", "moondream", "llama3.2:1b"]
 
-If the user is just greeting you or having casual conversation, respond naturally and warmly.
-If they ask what you can do, explain that you can:
-- Answer questions about their uploaded documents
-- Search through files they've indexed
-- Have general conversations
-- Help with document analysis
+        # 1. Prepare Tools
+        # Skip tool binding for:
+        # - Greetings/meta queries (don't need tools)
+        # - Temp doc analysis (doc content in prompt, no tools needed)
+        # - Models that don't support tools (prevents crash)
+        skip_tools = is_greeting_or_meta or bool(temp_doc_content) or (model_name in NON_TOOL_MODELS)
+        llm_with_tools = llm.bind_tools(TOOL_DEFINITIONS) if not skip_tools else llm
 
-Conversation History:
-{history}
-
-User Message: {question}
-
-Respond naturally and helpfully. Keep it concise for greetings."""
-            chain = (
-                {"question": RunnablePassthrough(), "history": lambda x: history_text} 
-                | ChatPromptTemplate.from_template(template) 
-                | llm 
-                | StrOutputParser()
-            )
+        # 2. Define the System Prompt
+        if is_greeting_or_meta:
+             system_prompt = """You are a friendly AI assistant called Local RAG Agent.
+Respond directly to greetings and general questions warmly.
+Do not use tools for simple greetings."""
+             if vision_context:
+                 system_prompt += vision_context
         else:
-            # RAG mode - use document context
-            template = """You are an AI assistant with access to the user's documents, but you are also a general-purpose assistant.
-            
-IMPORTANT INSTRUCTIONS:
-1. **Prioritize the User's Input**: Answer the question directly based on the user's query and your general knowledge.
-2. **Use Context Wisely**: Only use the "Document Context" below if:
-   - The user explicitly asks about their files/documents.
-   - The answer requires specific information not in your general training (e.g. private data).
-3. **General Queries**: If the user asks a general question (e.g. "How do I write a loop?"), answer it generally. DO NOT limit yourself to the documents.
-4. **No Hallucination**: If the user specifically asks "What is in file X?" and it's not in the context, say so. But for general questions, answer normally.
-5. **Citations**: If you do use the context, briefly mention the source filename.
+            # === RAG & AGENT PROMPTS ===
+            if skip_tools:
+                # Simplified prompt for models that cannot use tools (Prevents hallucinations)
+                system_prompt = """You are a helpful Assistant with access to the user's local files.
+I have provided the list of available files below in your context.
+
+GUIDELINES:
+1. **Context First**: Answer based on the provided file content and list.
+2. **Capabilities**: You can answer questions about the files I list.
+3. **No Hallucinations**: Do not claim to use tools like `list_files` or `ingest`. Just say what you see.
+4. **General**: For generic questions, answer normally.
 
 Conversation History:
 {history}
+"""
+            else:
+                system_prompt = """You are an Agentic Assistant with access to the user's local files.
+You can read (ingest), delete, and list files.
 
-Document Context:
-{context}
+GUIDELINES:
+1. **Context First**: If the user asks about a file, try to find it in your context or valid file list.
+2. **Tools**: Use `list_files` to see what's available. Use `ingest_document` to memorize a file.
+3. **Safety**: If asked to delete something, use `delete_document` (I will ask for approval).
+4. **General**: For generic questions, answer normally without tools.
+5. **No Hallucinations**: Do not invent file content.
 
-User Question: {question}
+Conversation History:
+{history}
+"""
+            # Format history immediately to avoid issues with braces in appended content later
+            system_prompt = system_prompt.format(history="")
 
-Response:"""
+            # Add RAG Context if available
+            if retriever:
+                 try:
+                    docs = retriever.invoke(query)
+                    if docs:
+                        context_str = format_docs(docs)
+                        system_prompt += f"\n\nRELEVANT DOCUMENT CONTEXT:\n{context_str}\n"
+                 except Exception as e:
+                     print(f"Retrieval warning: {e}")
             
-            def get_context(query):
-                docs = retriever.invoke(query) if hasattr(retriever, 'invoke') else retriever.get_relevant_documents(query)
-                return format_docs(docs)
-            
-            chain = (
-                {"context": lambda x: get_context(x), "question": RunnablePassthrough(), "history": lambda x: history_text} 
-                | ChatPromptTemplate.from_template(template) 
-                | llm 
-                | StrOutputParser()
-            )
-        
-        def generate():
-            full_response = ""
+            # Add temp document content (for documents not added to RAG)
+            if temp_doc_content:
+                temp_content_str = "\n\n".join(temp_doc_content)
+                system_prompt += f"\n\nUPLOADED DOCUMENT CONTENT (for this session only):\n{temp_content_str}\n"
+                print(f"[DEBUG] Added temp_doc_content to prompt: {len(temp_content_str)} chars", flush=True)
+
+            # Inject File Catalog (so model knows what it has without tools)
             try:
-                for chunk in chain.stream(query):
-                    full_response += chunk
-                    yield chunk
-                
-                # Save to database after successful completion
-                add_message(session_id, 'user', query)
-                add_message(session_id, 'assistant', full_response)
+                catalog_paths = get_indexed_files() # Returns list of source paths
+                print(f"[DEBUG] get_indexed_files returned: {len(catalog_paths)} files", flush=True)
+                if catalog_paths:
+                    # Extract basenames for cleaner context
+                    file_names = [os.path.basename(p) for p in catalog_paths]
+                    # Format as bullet points
+                    catalog_list = [f"- {name}" for name in file_names[:50]] # Limit to 50
+                    if len(file_names) > 50:
+                        catalog_list.append(f"...and {len(file_names)-50} more.")
+                    
+                    catalog_str = "\n".join(catalog_list)
+                    system_prompt += f"\n\nAVAILABLE KNOWLEDGE BASE (Files in Database):\n{catalog_str}\n"
+                    print(f"[DEBUG] Injected catalog into system prompt. Catalog length: {len(catalog_str)}", flush=True)
+                else:
+                    print("[DEBUG] No files found in index to inject.", flush=True)
             except Exception as e:
+                print(f"Catalog injection error: {e}", flush=True)
+            
+            # Append Vision Context (if any)
+            if vision_context:
+                 system_prompt += vision_context
+                 
+            print(f"[DEBUG] FINAL SYSTEM PROMPT:\n{system_prompt}\n[END PROMPT]", flush=True)
+
+        # 3. Construct Message Chain
+        # We need to rebuild the message list for the chat model
+        # The 'history' variable is a list of dicts. We convert to LangChain messages.
+        messages = [SystemMessage(content=system_prompt)] # History is handled via message construction below
+        
+        # Add past history (limit to last 10 turns to fit context)
+        # session_messages = get_messages(session_id) 
+        # (This is already passed as 'history' arg effectively, but we constructed text. 
+        # For tools, we need Message objects. Let's use the raw history if possible,
+        # but for now we'll rely on the text representation in system prompt or construct simple history)
+        
+        # Simpler approach: Just append the User's current query
+        messages.append(HumanMessage(content=query))
+
+        def generate_agent_stream():
+            full_response = []  # Accumulate response for DB storage
+            try:
+                # --- TURN 1: Initial Generation ---
+                ai_msg = llm_with_tools.invoke(messages)
+                
+                # Check for Tool Calls
+                if ai_msg.tool_calls:
+                    for tool_call in ai_msg.tool_calls:
+                        tool_name = tool_call["name"].lower()
+                        tool_args = tool_call["args"]
+                        tool_id = tool_call["id"]
+                        
+                        # A. Security Check
+                        requires_approval, reason = analyze_tool_call(tool_name, tool_args)
+                        
+                        if requires_approval:
+                            # Yield Approval Request to Frontend
+                            approval_data = {
+                                "tool": tool_name,
+                                "args": tool_args,
+                                "id": tool_id,
+                                "reason": reason
+                            }
+                            PENDING_ACTIONS[session_id] = approval_data
+                            yield f"[APPROVAL_REQUIRED] {json.dumps(approval_data)}"
+                            return
+
+                        # B. Safe Execution
+                        yield f"🤖 Use Tool: `{tool_name}`...\n"
+                        
+                        action_function = TOOL_REGISTRY.get(tool_name)
+                        if action_function:
+                            if tool_name == "ingest_document" or tool_name == "delete_document":
+                                result_json = action_function(**tool_args)
+                            else:
+                                result_json = action_function()
+                                
+                            messages.append(ai_msg)
+                            messages.append(ToolMessage(content=result_json, tool_call_id=tool_id))
+                            
+                            yield f"✅ Tool Result: {result_json}\n\n"
+                        else:
+                            yield f"❌ Error: Tool {tool_name} not found.\n"
+
+                    # --- TURN 2: Final Response after Tool Execution ---
+                    for chunk in llm.stream(messages):
+                         content = chunk.content
+                         if content:
+                             full_response.append(content)
+                             yield content
+                else:
+                    # No tools used - stream the response
+                    response_content = ai_msg.content
+                    if response_content:
+                        full_response.append(response_content)
+                        yield response_content
+                    else:
+                        # Fallback: try to get text representation
+                        fallback = str(ai_msg) if ai_msg else "I couldn't generate a response. Please try again."
+                        full_response.append(fallback)
+                        yield fallback
+
+                # Save to DB with actual response content
+                # Append attachment info to metadata
+                file_meta = []
+                if files:
+                    file_meta = [{"name": f.get("name"), "type": f.get("type", "document"), "path": f"/uploaded_files/{f.get('name')}"} for f in files]
+                
+                # Keep text fallback for searchability, but rely on metadata for UI
+                user_msg_to_save = query
+                
+                add_message(session_id, 'user', user_msg_to_save, metadata={"files": file_meta})
+                
+                final_response = "".join(full_response) if full_response else "[No response generated]"
+                add_message(session_id, 'assistant', final_response[:2000])  # Truncate if too long
+
+            except Exception as e:
+                traceback.print_exc()
                 error_msg = f"\n\n[Error: {str(e)}]"
                 yield error_msg
+                
+                # Append attachment info to history on error too
+                user_msg_to_save = query
+                if files:
+                    file_names = [f.get("name", "unknown") for f in files]
+                    user_msg_to_save += "\n\n" + "\n".join([f"[Attached: {name}]" for name in file_names])
 
-        return Response(generate(), mimetype='text/plain')
-        
+                add_message(session_id, 'user', user_msg_to_save)
+                add_message(session_id, 'assistant', error_msg)
+
+        # Return the streaming response
+        return Response(generate_agent_stream(), mimetype='text/plain')
+
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-@app.route("/ocr", methods=["POST"])
-def ocr():
-    """Extract text from uploaded images using OCR."""
-    if "image" not in request.files:
-        return jsonify({"error": "No image uploaded"}), 400
+
+# ==========================================
+# AGENTIC APPROVAL ENDPOINT
+# ==========================================
+# Global store for pending actions
+PENDING_ACTIONS = {}
+
+@app.route("/api/agent/allow", methods=["POST"])
+def allow_tool():
+    """Execute a pending tool call after user approval."""
+    data = request.json
+    session_id = data.get("session_id")
+    action_id = data.get("action_id")
+    decision = data.get("decision", "deny")
     
-    image_file = request.files["image"]
-    if image_file.filename == "":
-        return jsonify({"error": "No selected file"}), 400
+    if not session_id or not action_id:
+        return jsonify({"error": "Missing session_id or action_id"}), 400
         
+    pending = PENDING_ACTIONS.get(session_id)
+    if not pending or pending["id"] != action_id:
+        return jsonify({"error": "No matching pending action found."}), 404
+    
+    # Clear pending
+    del PENDING_ACTIONS[session_id]
+    
+    if decision != "approve":
+        return jsonify({"status": "denied", "message": "Action cancelled by user."})
+    
+    # Execute Tool
+    tool_name = pending["tool"]
+    tool_args = pending["args"]
+    
+    action_function = TOOL_REGISTRY.get(tool_name)
+    if not action_function:
+         return jsonify({"error": f"Tool {tool_name} not found"}), 500
+         
     try:
-        image = Image.open(image_file)
-        text = pytesseract.image_to_string(image)
-        if not text.strip():
-            return jsonify({"text": "", "warning": "No text detected in image"})
-        return jsonify({"text": text})
+        # Execute
+        result_json = action_function(**tool_args) if tool_args else action_function()
+        
+        # In a real agent loop, we would feed this back to LLM.
+        # For Phase 1, we just return the result to the UI.
+        return jsonify({
+            "status": "success", 
+            "result": result_json,
+            "tool": tool_name
+        })
+
     except Exception as e:
-        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+
 
 
 @app.route("/")
 def index():
     """Render the main chat interface."""
     config = load_config()
-    session_id = get_current_session()
+    
+    # Force Start with New Chat (Reset Global State)
+    global CURRENT_SESSION_ID
+    CURRENT_SESSION_ID = None
+    session_id = None
     
     # Get all sessions for sidebar and dashboard
     all_sessions = get_all_sessions()
@@ -318,6 +611,34 @@ def upload():
     
     return redirect(url_for("index", message="No files selected", status="error"))
 
+
+# ============== MODEL MANAGEMENT API ==============
+
+@app.route("/api/models", methods=["GET"])
+def api_list_models():
+    """Get list of available Ollama models."""
+    config = load_config()
+    ollama_host = config.get("ollama_host", "http://localhost:11434")
+    models = list_models(ollama_host)
+    return jsonify({"models": models, "count": len(models)})
+
+@app.route("/api/models/pull", methods=["POST"])
+def api_pull_model():
+    """Pull a new model from Ollama."""
+    data = request.json
+    model_name = data.get("name")
+    if not model_name:
+        return jsonify({"error": "Model name required"}), 400
+    
+    return Response(pull_model_stream(model_name), mimetype='application/x-ndjson')
+
+@app.route("/api/models/<path:model_name>", methods=["DELETE"])
+def api_delete_model(model_name):
+    """Delete a model."""
+    success, msg = delete_model(model_name)
+    if success:
+        return jsonify({"status": "success", "message": msg})
+    return jsonify({"error": msg}), 500
 
 # ============== NEW API ENDPOINTS ==============
 
@@ -423,6 +744,30 @@ def delete_chat_session(session_id):
     return jsonify({"error": "Session not found"}), 404
 
 
+@app.route("/api/sessions/bulk_delete", methods=["POST"])
+def bulk_delete_sessions():
+    """Delete multiple chat sessions."""
+    global CURRENT_SESSION_ID
+    data = request.json
+    session_ids = data.get("session_ids", [])
+    
+    if not session_ids:
+        return jsonify({"error": "No session IDs provided"}), 400
+        
+    deleted_count = 0
+    for session_id in session_ids:
+        if delete_session(session_id):
+            deleted_count += 1
+            if CURRENT_SESSION_ID == session_id:
+                CURRENT_SESSION_ID = None
+                
+    # If we deleted the current session, reset to default
+    if CURRENT_SESSION_ID is None:
+        CURRENT_SESSION_ID = get_or_create_default_session()
+        
+    return jsonify({"status": "success", "deleted_count": deleted_count})
+
+
 @app.route("/api/sessions/<int:session_id>/clear", methods=["POST"])
 def clear_session(session_id):
     """Clear all messages in a session."""
@@ -441,6 +786,7 @@ def rename_chat_session(session_id):
     
     if rename_session(session_id, new_name):
         return jsonify({"status": "success"})
+    return jsonify({"error": "Session not found or rename failed"}), 404
 
 
 @app.route("/api/sessions/<int:session_id>/export", methods=["GET"])
@@ -489,7 +835,6 @@ def export_session(session_id):
         mimetype=mimetype,
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
-    return jsonify({"error": "Session not found"}), 404
 
 
 @app.route("/api/index/stats", methods=["GET"])

@@ -3,9 +3,13 @@ import time
 import webbrowser
 import sys
 import shutil
+import os
 import chat
 
-REQUIRED_MODELS = ["gemma3:270m", "qwen2.5:0.5b", "nomic-embed-text"]
+REQUIRED_MODELS = ["gemma2:2b", "gemma3:270m", "qwen2.5:0.5b", "nomic-embed-text", "moondream"]
+LOCK_DIR = os.path.dirname(os.path.abspath(__file__))
+BROWSER_LOCK = os.path.join(LOCK_DIR, ".browser_opened")
+CLI_LOCK = os.path.join(LOCK_DIR, ".cli_opened")
 
 def check_dependencies():
     """Checks if Ollama is installed and models are pulled."""
@@ -41,28 +45,73 @@ def check_dependencies():
         print("\n❌ Error: Failed to communicate with Ollama. Is the server running?")
         sys.exit(1)
 
+def is_server_running():
+    """Check if the Flask server is already running on port 8501."""
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(1)
+        result = sock.connect_ex(('127.0.0.1', 8501))
+        return result == 0
+    except:
+        return False
+    finally:
+        sock.close()
+
+def cleanup_locks():
+    """Remove lock files on clean shutdown."""
+    for lock in [BROWSER_LOCK, CLI_LOCK]:
+        if os.path.exists(lock):
+            try:
+                os.remove(lock)
+            except:
+                pass
+
 def start():
     check_dependencies()
-    print("Initializing Hybrid Architecture...")
     
-    # 1. Start Flask UI in background
-    ui = subprocess.Popen(
-        [sys.executable, "app.py"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
+    server_was_running = is_server_running()
     
-    # 2. Open Browser
-    time.sleep(5)
-    webbrowser.open("http://localhost:8501")
-    
-    # 3. Start Terminal Chat in New Window
-    print("\nLaunching CLI Chat in a new window...")
-    if sys.platform == 'win32':
-        subprocess.Popen(["start", "cmd", "/k", sys.executable, "chat.py"], shell=True)
+    if server_was_running:
+        print("Server restart detected. Continuing...")
     else:
-        # Fallback for other OS (Linux/Mac) - though user is on Windows
-        subprocess.Popen(["x-terminal-emulator", "-e", f"{sys.executable} chat.py"])
+        print("Initializing Hybrid Architecture...")
+    
+    # 1. Start Flask UI in background (if not already running)
+    ui = None
+    if not server_was_running:
+        ui = subprocess.Popen(
+            [sys.executable, "app.py"],
+            # stdout=subprocess.DEVNULL, # Allow logs to show
+            # stderr=subprocess.DEVNULL
+        )
+        time.sleep(5)
+    
+    # 2. Open Browser ONLY if not already opened
+    browser_already_open = os.path.exists(BROWSER_LOCK)
+    if not browser_already_open:
+        port = 8501 # Define port for clarity
+        print(f"Opening browser at http://127.0.0.1:{port}")
+        webbrowser.open(f'http://127.0.0.1:{port}')
+        # Create lock file to prevent future duplicates
+        with open(BROWSER_LOCK, 'w') as f:
+            f.write(str(time.time()))
+    else:
+        print("Browser already open. Skipping browser launch (refresh manually if needed).")
+    
+    # 3. Start Terminal Chat in New Window ONLY if not already opened
+    cli_already_open = os.path.exists(CLI_LOCK)
+    if not cli_already_open:
+        print("\nLaunching CLI Chat in a new window...")
+        if sys.platform == 'win32':
+            subprocess.Popen(["start", "cmd", "/k", sys.executable, "chat.py"], shell=True)
+        else:
+            subprocess.Popen(["x-terminal-emulator", "-e", f"{sys.executable} chat.py"])
+        # Create lock file
+        with open(CLI_LOCK, 'w') as f:
+            f.write(str(time.time()))
+    else:
+        print("CLI already open. Skipping CLI launch.")
 
     # 4. Lock Main Terminal
     print("\n" + "="*60)
@@ -78,7 +127,9 @@ def start():
             time.sleep(1)
     except KeyboardInterrupt:
         print("\nShutting down system...")
-        ui.terminate()
+        cleanup_locks()
+        if ui:
+            ui.terminate()
         sys.exit()
 
 if __name__ == "__main__":

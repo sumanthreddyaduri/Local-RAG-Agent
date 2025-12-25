@@ -1,0 +1,6 @@
+#!/bin/bash
+# Onyx - Privacy-First AI Assistant
+# Unix/Mac launcher script
+
+echo "Starting Onyx v2.0.0..."
+python3 start_app.py "$@"

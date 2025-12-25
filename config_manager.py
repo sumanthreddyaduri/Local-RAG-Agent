@@ -11,8 +11,8 @@ CONFIG_FILE = "config.json"
 
 DEFAULT_CONFIG = {
     # Model Settings
-    "model": "gemma3:270m",
-    "available_models": ["gemma3:270m", "qwen2.5:0.5b", "llama3.2:1b", "phi3:mini"],
+    "model": "gemma2:2b",
+    "available_models": ["gemma2:2b", "gemma3:270m", "qwen2.5:0.5b"],  # Chat models only (not embed/vision)
     
     # Mode Settings
     "mode": "cli",  # 'cli' or 'browser'

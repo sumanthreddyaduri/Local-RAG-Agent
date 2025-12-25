@@ -841,19 +841,19 @@ async function checkHealth() {
 }
 
 function toggleMode() {
-    const btn = document.getElementById('btn-toggle');
+    const checkbox = document.getElementById('mode-toggle-checkbox');
     const status = document.getElementById('mode-status');
 
-    if (currentMode === 'cli') {
-        currentMode = 'browser';
-        btn.innerHTML = '<img src="https://img.icons8.com/?id=2177&format=png&size=24" class="icon" alt="CLI"> CLI Mode';
-        if (status) status.innerHTML = 'Mode: <strong>Browser Chat</strong>';
-        showView('chat');
-    } else {
+    // Determine mode based on checkbox state
+    // Checked = CLI mode, Unchecked = Browser mode
+    if (checkbox && checkbox.checked) {
         currentMode = 'cli';
-        btn.innerHTML = '<img src="https://img.icons8.com/?id=38977&format=png&size=24" class="icon" alt="Chat"> Chat Mode';
         if (status) status.innerHTML = 'Mode: <strong>CLI Chat</strong>';
         showView('controls');
+    } else {
+        currentMode = 'browser';
+        if (status) status.innerHTML = 'Mode: <strong>Browser Chat</strong>';
+        showView('chat');
     }
 
     fetch('/set_mode', {
@@ -864,6 +864,175 @@ function toggleMode() {
 }
 
 // ============== CHAT & SESSION MANAGEMENT ==============
+// ============== CHAT & SESSION MANAGEMENT ==============
+
+// Bulk Delete State
+let isBulkDeleteMode = false;
+let selectedSessions = new Set();
+
+function handleBulkDeleteClick(event) {
+    if (event) event.preventDefault();
+    console.log('[App] handleBulkDeleteClick called. Mode:', isBulkDeleteMode);
+    if (isBulkDeleteMode) {
+        console.log('[App] Triggering deleteSelectedChats');
+        deleteSelectedChats();
+    } else {
+        console.log('[App] Toggling bulk delete mode');
+        toggleBulkDeleteMode();
+    }
+}
+
+function toggleBulkDeleteMode() {
+    isBulkDeleteMode = !isBulkDeleteMode;
+    selectedSessions.clear();
+
+    const btn = document.getElementById('bulk-delete-toggle-btn');
+    const selectContainer = document.getElementById('bulk-select-container');
+    const selectAllCheckbox = document.getElementById('select-all-checkbox');
+
+    if (isBulkDeleteMode) {
+        btn.textContent = 'Delete (0)';
+        btn.classList.add('danger-btn');
+        // Action handled by handleBulkDeleteClick
+        selectContainer.style.display = 'block';
+        if (selectAllCheckbox) selectAllCheckbox.checked = false;
+    } else {
+        btn.textContent = 'Clear chats';
+        btn.classList.remove('danger-btn');
+        // Action handled by handleBulkDeleteClick
+        selectContainer.style.display = 'none';
+        selectedSessions.clear();
+    }
+
+    loadSessions();
+}
+
+function updateBulkDeleteButton() {
+    const btn = document.getElementById('bulk-delete-toggle-btn');
+    if (isBulkDeleteMode && btn) {
+        const count = selectedSessions.size;
+        btn.textContent = `Delete (${count})`;
+    }
+}
+
+function toggleSelectAll(checked) {
+    const checkboxes = document.querySelectorAll('.session-checkbox');
+    checkboxes.forEach(cb => {
+        cb.checked = checked;
+        const id = parseInt(cb.dataset.id);
+        if (checked) {
+            selectedSessions.add(id);
+        } else {
+            selectedSessions.delete(id);
+        }
+    });
+    updateBulkDeleteButton();
+}
+
+function toggleSessionSelection(id, event) {
+    if (event) event.stopPropagation();
+    const checkbox = document.querySelector(`.session-checkbox[data-id="${id}"]`);
+    const sessionId = parseInt(id);
+
+    if (checkbox) {
+        if (checkbox.checked) {
+            selectedSessions.add(sessionId);
+        } else {
+            selectedSessions.delete(sessionId);
+            // Uncheck select all if one is unchecked
+            document.getElementById('select-all-checkbox').checked = false;
+        }
+        updateBulkDeleteButton();
+    }
+}
+
+async function deleteSelectedChats() {
+    if (selectedSessions.size === 0) {
+        toggleBulkDeleteMode();
+        return;
+    }
+
+    // Show custom modal instead of native confirm
+    const modal = document.getElementById('confirm-modal');
+    const msg = document.getElementById('confirm-modal-message');
+    const okBtn = document.getElementById('confirm-modal-ok');
+
+    if (modal && msg && okBtn) {
+        msg.textContent = `Are you sure you want to delete ${selectedSessions.size} chats? This cannot be undone.`;
+
+        // Remove existing listeners to prevent duplicates/wrong actions
+        const newOkBtn = okBtn.cloneNode(true);
+        okBtn.parentNode.replaceChild(newOkBtn, okBtn);
+
+        newOkBtn.onclick = executeBulkDelete;
+
+        // Also handle cancel button cleanup if needed, but hideConfirmModal is static
+
+        modal.style.display = 'flex';
+    } else {
+        console.error('Confirm modal elements missing');
+        // Fallback to native if modal broken
+        if (confirm(`Are you sure you want to delete ${selectedSessions.size} chats?`)) {
+            executeBulkDelete();
+        }
+    }
+}
+
+async function executeBulkDelete() {
+    hideConfirmModal();
+
+    console.log('[BulkDelete] About to show toast...');
+    showToast('Deleting chats...', 'info');
+
+    // DEBUG: Log the sessions to be deleted
+    console.log('[BulkDelete] Starting delete for sessions:', Array.from(selectedSessions));
+
+    try {
+        const payload = { session_ids: Array.from(selectedSessions) };
+        console.log('[BulkDelete] Payload:', payload);
+
+        const response = await fetch('/api/sessions/bulk_delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        console.log('[BulkDelete] Response status:', response.status);
+
+        const data = await response.json();
+
+        if (data.status === 'success') {
+            showToast(`Deleted ${data.deleted_count} chats`, 'success');
+
+            isBulkDeleteMode = false;
+
+            // Reset button UI
+            const btn = document.getElementById('bulk-delete-toggle-btn');
+            if (btn) {
+                btn.textContent = 'Clear chats';
+                btn.classList.remove('danger-btn');
+            }
+            document.getElementById('bulk-select-container').style.display = 'none';
+            selectedSessions.clear();
+
+            // Reload EVERYTHING
+            if (data.deleted_count > 0) {
+                currentSessionId = null;
+                await loadSessions();
+                loadChatHistory();
+            } else {
+                await loadSessions();
+            }
+        } else {
+            showToast('Failed to delete chats: ' + data.error, 'error');
+        }
+    } catch (e) {
+        console.error('[BulkDelete] Error:', e);
+        showToast('Error deleting chats', 'error');
+    }
+}
+
+
 async function loadSessions() {
     try {
         const response = await fetch('/api/sessions');
@@ -877,20 +1046,51 @@ async function loadSessions() {
             currentSessionId = data.current;
         }
 
-        list.innerHTML = sessions.map(session => `
+        list.innerHTML = sessions.map(session => {
+            const isSelected = selectedSessions.has(session.id);
+
+            let actionHtml = '';
+            let selectionHtml = '';
+
+            if (isBulkDeleteMode) {
+                selectionHtml = `
+                    <div style="margin-right: 10px;" onclick="event.stopPropagation()">
+                        <input type="checkbox" class="session-checkbox" data-id="${session.id}" 
+                               onchange="toggleSessionSelection(${session.id}, event)" 
+                               ${isSelected ? 'checked' : ''} 
+                               style="transform: scale(1.2); cursor: pointer;">
+                    </div>
+                `;
+            } else {
+                actionHtml = `
+                    <button class="delete-session-btn" onclick="deleteSession(${session.id}, event)" title="Delete Session">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#e74c3c">
+                            <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM8 9h8v10H8V9zm7.5-5l-1-1h-5l-1 1H5v2h14V4h-3.5z"/>
+                            <path d="M9 12h2v5H9zm4 0h2v5h-2z" fill="white"/>
+                        </svg>
+                    </button>
+                `;
+            }
+
+            return `
             <div class="history-item ${session.id === currentSessionId ? 'active' : ''}" 
                  onclick="switchSession(${session.id})"
                  oncontextmenu="showSessionContextMenu(event, ${session.id}, '${session.name.replace(/'/g, "\\'")}')"
-                 title="${session.name}">
-                <span class="history-name">${session.name}</span>
-                <button class="delete-session-btn" onclick="deleteSession(${session.id}, event)" title="Delete Session">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#e74c3c">
-                        <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM8 9h8v10H8V9zm7.5-5l-1-1h-5l-1 1H5v2h14V4h-3.5z"/>
-                        <path d="M9 12h2v5H9zm4 0h2v5h-2z" fill="white"/>
-                    </svg>
-                </button>
+                 title="${session.name}" style="display: flex; align-items: center;">
+                ${selectionHtml}
+                <span class="history-name" style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${session.name}</span>
+                ${actionHtml}
             </div>
-        `).join('');
+        `}).join('');
+
+        // Update select all checkbox if needed
+        if (isBulkDeleteMode) {
+            const selectAllCheckbox = document.getElementById('select-all-checkbox');
+            if (selectAllCheckbox) {
+                const allSelected = sessions.length > 0 && sessions.every(s => selectedSessions.has(s.id));
+                selectAllCheckbox.checked = allSelected;
+            }
+        }
     } catch (e) {
         console.error('Failed to load sessions:', e);
     }
@@ -1030,7 +1230,11 @@ async function loadChatHistory() {
             toggleEmptyState(true);
             historyContainer.innerHTML = '';
         }
-        scrollToBottom();
+        // Re-add scroll anchor after innerHTML replacement
+        ensureScrollAnchor();
+        // Scroll to bottom after content loads
+        setTimeout(() => scrollToBottom(), 100);
+
     } catch (e) {
         console.error('loadChatHistory error:', e);
         historyContainer.innerHTML = '<div class="error-message">Failed to load history</div>';
@@ -1082,6 +1286,9 @@ async function sendMessage() {
     botMsgDiv.className = 'chat-message bot-message';
     botMsgDiv.innerHTML = '<div class="message-content"><span class="loading-spinner"></span> Thinking...</div>';
     historyContainer.appendChild(botMsgDiv);
+
+    // Ensure anchor exists and scroll to bottom
+    ensureScrollAnchor();
     scrollToBottom();
 
     const startTime = performance.now();
@@ -1120,22 +1327,44 @@ async function sendMessage() {
             const chunk = decoder.decode(value, { stream: true });
             fullText += chunk;
 
-            // Live render markdown (debounced in production, but direct here is fine for now)
-            contentDiv.innerHTML = typeof marked !== 'undefined' ? marked.parse(fullText) : escapeHtml(fullText);
+            // Check for Approval Request Token
+            if (fullText.includes('[APPROVAL_REQUIRED]')) {
+                const parts = fullText.split('[APPROVAL_REQUIRED]');
+                // The part before token is normal text (if any)
+                const preText = parts[0];
+                const jsonStr = parts[1].trim();
 
-            // Auto scroll only if near bottom
-            // scrollToBottom(); 
-            // Better: scroll current message into view
+                // Render prefix info if any
+                if (preText) {
+                    contentDiv.innerHTML = typeof marked !== 'undefined' ? marked.parse(preText) : escapeHtml(preText);
+                }
+
+                try {
+                    const approvalData = JSON.parse(jsonStr);
+                    renderApprovalCard(contentDiv, approvalData, preText);
+                    // Stop processing stream as backend has paused
+                    break;
+                } catch (e) {
+                    console.error("Failed to parse approval data", e);
+                }
+            } else {
+                // Normal stream
+                contentDiv.innerHTML = typeof marked !== 'undefined' ? marked.parse(fullText) : escapeHtml(fullText);
+            }
+
+            // Scroll current message into view
             botMsgDiv.scrollIntoView({ behavior: "smooth", block: "end" });
         }
 
         const endTime = performance.now();
         const duration = ((endTime - startTime) / 1000).toFixed(1);
 
-        // Add metrics footer
-        let metricsHtml = `<div class="message-meta">${duration}s`;
-        metricsHtml += ` • AI</div>`;
-        botMsgDiv.insertAdjacentHTML('beforeend', metricsHtml);
+        // Add metrics footer (only if not waiting for approval)
+        if (!fullText.includes('[APPROVAL_REQUIRED]')) {
+            let metricsHtml = `<div class="message-meta">${duration}s`;
+            metricsHtml += ` • AI</div>`;
+            botMsgDiv.insertAdjacentHTML('beforeend', metricsHtml);
+        }
 
         // Highlight code blocks
         if (typeof hljs !== 'undefined') {
@@ -1165,9 +1394,34 @@ async function sendMessage() {
 }
 
 function scrollToBottom() {
+    // Use the anchor element for reliable scrollIntoView
+    const anchor = document.getElementById('chat-scroll-anchor');
+    if (anchor) {
+        anchor.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        return;
+    }
+
+    // Fallback: manual scroll
     const history = document.getElementById('chat-history');
-    history.scrollTop = history.scrollHeight;
+    if (history) {
+        history.scrollTop = history.scrollHeight;
+    }
 }
+
+// Ensure anchor exists in chat-history (re-add if content replaced)
+function ensureScrollAnchor() {
+    const history = document.getElementById('chat-history');
+    if (!history) return;
+
+    let anchor = document.getElementById('chat-scroll-anchor');
+    if (!anchor) {
+        anchor = document.createElement('div');
+        anchor.id = 'chat-scroll-anchor';
+        anchor.style.height = '1px';
+        history.appendChild(anchor);
+    }
+}
+
 
 // ============== INDEX MANAGEMENT ==============
 async function clearIndex() {
@@ -1617,3 +1871,143 @@ async function submitRename() {
         showToast('Error renaming session', 'error');
     }
 }
+
+// ============== PAGE INITIALIZATION ==============
+// Auto-scroll chat to bottom when page loads
+document.addEventListener('DOMContentLoaded', function () {
+    // Ensure anchor exists and scroll to bottom on load
+    setTimeout(() => {
+        ensureScrollAnchor();
+        scrollToBottom();
+    }, 500);
+});
+
+// Also scroll when switching to chat view
+const originalShowView = window.showView;
+if (typeof originalShowView === 'function') {
+    window.showView = function (viewName) {
+        originalShowView(viewName);
+        if (viewName === 'chat') {
+            setTimeout(() => {
+                ensureScrollAnchor();
+                scrollToBottom();
+            }, 100);
+        }
+    };
+}
+
+// ==========================================
+// AGENTIC UI HANDLERS (Phase 1.2)
+// ==========================================
+
+function renderApprovalCard(container, data, preText) {
+    // data = { tool, args, id, reason }
+    const cardId = `approval-${data.id}`;
+
+    // Create card HTML with approval/deny buttons
+    // We use onclick to call global handlers
+    const cardHtml = `
+    <div id="${cardId}" class="approval-card" style="margin-top: 10px; border: 1px solid #e74c3c; background: rgba(231, 76, 60, 0.1); border-radius: 8px; padding: 15px;">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px; color: #e74c3c; font-weight: bold;">
+            <span style="font-size: 1.2em;">⚠️</span> Approval Required
+        </div>
+        <div style="margin-bottom: 15px;">
+            <div style="font-weight: 600; margin-bottom: 5px;">Action: <code style="color: #e74c3c; background: #333; padding: 2px 5px; border-radius: 3px;">${data.tool}</code></div>
+            <div style="font-size: 0.9em; color: var(--text-muted); font-family: monospace; white-space: pre-wrap;">Arguments: ${JSON.stringify(data.args, null, 2)}</div>
+            <div style="margin-top: 5px; font-style: italic; font-size: 0.9em; background: rgba(0,0,0,0.2); padding: 5px; border-left: 3px solid #e74c3c;">Reason: ${data.reason}</div>
+        </div>
+        <div class="approval-actions" style="display: flex; gap: 10px;">
+            <button onclick="approveAction('${data.id}', '${cardId}')" class="primary-btn" style="background: #27ae60; flex: 1; justify-content: center;">✅ Approve</button>
+            <button onclick="denyAction('${data.id}', '${cardId}')" class="primary-btn" style="background: #e74c3c; flex: 1; justify-content: center;">❌ Deny</button>
+        </div>
+    </div>
+    `;
+
+    // Append to existing text (careful not to overwrite if streaming was midway, but we broke stream)
+    // We assume container has the preCheck text logic already handled in caller
+    container.insertAdjacentHTML('beforeend', cardHtml);
+}
+
+async function approveAction(actionId, cardId) {
+    handleActionDecision(actionId, cardId, 'approve');
+}
+
+async function denyAction(actionId, cardId) {
+    handleActionDecision(actionId, cardId, 'deny');
+}
+
+async function handleActionDecision(actionId, cardId, decision) {
+    const card = document.getElementById(cardId);
+    if (!card) return;
+
+    // Disable buttons
+    const buttons = card.querySelectorAll('button');
+    buttons.forEach(btn => btn.disabled = true);
+
+    // Show spinner
+    const statusDiv = document.createElement('div');
+    statusDiv.style.marginTop = '10px';
+    statusDiv.style.textAlign = 'center';
+    statusDiv.style.fontStyle = 'italic';
+    statusDiv.innerHTML = decision === 'approve' ? '<span class="loading-spinner"></span> Executing...' : 'Cancelling...';
+    card.appendChild(statusDiv);
+
+    try {
+        const response = await fetch('/api/agent/allow', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session_id: currentSessionId,
+                action_id: actionId,
+                decision: decision
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.status === 'success') {
+            // Update Card to Success State
+            card.style.borderColor = '#27ae60';
+            card.style.background = 'rgba(39, 174, 96, 0.1)';
+            card.innerHTML = `
+                <div style="color: #27ae60; font-weight: bold; display: flex; align-items: center; gap: 8px;">
+                    <span>✅</span> Action Approved & Executed
+                </div>
+                <div style="margin-top: 10px; font-size: 0.9em;">
+                    <strong>Result:</strong>
+                    <pre style="background: #111; color: #eee; padding: 10px; margin-top: 5px; border-radius: 4px; overflow-x: auto;">${JSON.stringify(data.result, null, 2)}</pre>
+                </div>
+            `;
+            // Trigger refresh of file list if applicable
+            if (data.tool && (data.tool.includes('delete') || data.tool.includes('ingest'))) {
+                loadStats();
+                if (document.getElementById('files-view') && !document.getElementById('files-view').classList.contains('hidden')) {
+                    loadFiles();
+                }
+            }
+        } else if (data.status === 'denied') {
+            // Update Card to Denied State
+            card.style.borderColor = '#7f8c8d';
+            card.style.background = 'rgba(127, 140, 141, 0.1)';
+            card.innerHTML = `<div style="color: #95a5a6; font-weight: bold; text-align: center;">🚫 Action Denied</div>`;
+        } else {
+            // Error
+            statusDiv.innerHTML = `<span style="color: red;">Error: ${data.error || 'Unknown error'}</span>`;
+            buttons.forEach(btn => btn.disabled = false);
+        }
+
+    } catch (e) {
+        console.error(e);
+        statusDiv.innerHTML = `<span style="color: red;">Network Error: ${e.message}</span>`;
+        buttons.forEach(btn => btn.disabled = false);
+    }
+}
+
+// Initialize Bulk Delete Button Listener
+// (Removed in favor of inline onclick for reliability)
+// document.addEventListener('DOMContentLoaded', () => {
+//     const btn = document.getElementById('bulk-delete-toggle-btn');
+//     if (btn) {
+//         btn.addEventListener('click', handleBulkDeleteClick);
+//     }
+// });

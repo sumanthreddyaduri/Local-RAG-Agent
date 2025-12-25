@@ -1,37 +1,60 @@
-# 🧠 Hybrid Local RAG Agent
+# 🖤 Onyx - Private AI Assistant
 
 ![Python](https://img.shields.io/badge/Python-3.14-blue?logo=python&logoColor=white)
 ![Flask](https://img.shields.io/badge/Flask-Web%20UI-black?logo=flask&logoColor=white)
 ![Ollama](https://img.shields.io/badge/Ollama-Local%20LLM-white?logo=ollama&logoColor=black)
 ![LangChain](https://img.shields.io/badge/LangChain-RAG-green?logo=langchain&logoColor=white)
+![Version](https://img.shields.io/badge/version-2.0.0-purple)
 
 ## 🚀 Overview
-**Hybrid Local RAG Agent** is a privacy-first, offline AI tool designed for secure document analysis. It leverages local Large Language Models (LLMs) via **Ollama** to ingest, index, and chat with your documents (PDF, DOCX, TXT, etc.) without a single byte leaving your machine.
+**Onyx** is a privacy-first, offline AI assistant designed for secure document analysis and intelligent conversations. Leveraging local Large Language Models (LLMs) via **Ollama**, Onyx ingests, indexes, and chats with your documents (PDF, DOCX, TXT, etc.) without a single byte leaving your machine.
 
-> **Why I Built This:**  
-> I wanted to solve the privacy concerns associated with cloud-based AI. By running everything locally, I ensure that sensitive documents never leave the machine. This project demonstrates the integration of modern LLMs (Gemma 3, Qwen 2.5) with robust software engineering patterns (Flask, FAISS, LangChain) in a bleeding-edge Python 3.14 environment.
+> **Why Onyx?**  
+> Built on the principle of absolute data sovereignty, Onyx ensures your sensitive documents never leave your device. Run powerful AI models locally with the sleek, dark interface you deserve.
 
 ## 🏗️ Architecture
 
 ```mermaid
 graph TD
-    User[User] -->|Uploads Docs| UI[Flask Web UI]
-    User -->|Chats| Terminal[Terminal Interface]
+    User[User] -->|Uploads Docs| UI[Onyx Web Interface]
+    User -->|Chats| Browser[Browser Mode]
+    User -->|Executes| CLI[CLI Mode]
     UI -->|Ingests| Backend[Backend Logic]
     Backend -->|Chunks & Embeds| FAISS[FAISS Vector DB]
-    Terminal -->|Queries| FAISS
-    Terminal -->|Retrieves Context| LLM[Ollama (Gemma/Qwen)]
-    LLM -->|Response| Terminal
+    Browser -->|Queries| FAISS
+    CLI -->|Queries| FAISS
+    Browser -->|Retrieves Context| LLM[Ollama]
+    CLI -->|Retrieves Context| LLM
+    LLM -->|Response| User
 ```
 
-## ✨ Features
-- **🔒 100% Offline & Private**: No API keys, no cloud costs, no data leaks.
-- **🧠 Multi-Model Brain**: Switch instantly between `gemma3:270m` (speed) and `qwen2.5:0.5b` (reasoning).
-- **📂 Universal Ingestion**: Supports PDF, DOCX, TXT, CSV, Excel, and PowerPoint.
-- **🖥️ Dual Interface**:
-  - **Web Control Panel**: A sleek Flask-based UI for managing your "Knowledge Base" and configuring the agent.
-  - **Terminal Chat**: A distraction-free, hacker-style command line interface for deep work.
-- **🔄 Dynamic Context**: The agent knows exactly which files it has read and cites them.
+## ✨ Features (v2.0.0 "Obsidian")
+
+### 🔒 Privacy & Security
+- **100% Offline & Private**: No API keys, no cloud costs, no data leaks
+- **Local Processing**: All AI computations happen on your machine
+- **Data Sovereignty**: You control your data, always
+
+### 🎨 Premium Interface
+- **Sleek Dark UI**: Beautiful gradient design with cyan-to-purple accents
+- **Responsive Layout**: Adapts seamlessly to any screen size
+- **Dual Mode Toggle**: Switch between Browser and CLI modes instantly
+
+### 🧠 AI Capabilities
+- **Multi-Model Support**: Switch between `gemma3:270m` (speed) and `qwen2.5:0.5b` (reasoning)
+- **RAG-Powered**: Retrieval-Augmented Generation for accurate, context-aware responses
+- **Document Intelligence**: Understands PDF, DOCX, TXT, CSV, Excel, and PowerPoint
+
+### 📂 Document Management
+- **Universal Ingestion**: Drag-and-drop file uploads
+- **Smart Chunking**: Optimized text splitting for better retrieval
+- **Vector Search**: Lightning-fast semantic search with FAISS
+
+### 💬 Chat Features
+- **Session Management**: Organize conversations with automatic saving
+- **Bulk Operations**: Select and delete multiple chats at once
+- **Toast Notifications**: Clear visual feedback for all actions
+- **Custom Modals**: Reliable confirmation dialogs
 
 ## 📦 Installation
 
@@ -56,7 +79,7 @@ graph TD
    ```
 
 4. **Install Ollama**:
-   - Download from [ollama.com](https://ollama.com).
+   - Download from [ollama.com](https://ollama.com)
    - Pull the required models:
      ```bash
      ollama pull gemma3:270m
@@ -64,17 +87,68 @@ graph TD
      ollama pull nomic-embed-text
      ```
 
+5. **[Optional] Add Onyx to PATH** (to use `onyx` from anywhere):
+   ```bash
+   # Run interactive setup
+   .\onyx setup
+   
+   # Follow the prompts, then close and reopen your terminal
+   # Now you can use: onyx start (instead of .\onyx start)
+   ```
+
 ## 🚀 Usage
 
-Run the application with a single command:
+**Unified Onyx Command:**
 ```bash
+# Windows PowerShell (from project directory)
+.\onyx          # Start Onyx (default)
+.\onyx start    # Start Onyx (explicit)
+.\onyx stop     # Stop Onyx
+.\onyx status   # Check if Onyx is running
+
+# Mac/Linux
+./onyx          # Start Onyx
+./onyx stop     # Stop Onyx (Ctrl+C also works)
+./onyx status   # Check status
+
+# Or use Python directly
 python start_app.py
 ```
-- **Web UI**: Automatically opens at `http://localhost:8501`. Use this to upload files and switch models.
-- **Terminal**: The chat interface will appear in your console. Start typing to talk to your documents!
+
+- **Web Interface**: Opens at `http://localhost:8501`
+- **Browser Mode**: Chat with AI using web-based interface
+- **CLI Mode**: Switch to terminal-based chat for distraction-free work
 
 ## 🛠️ Tech Stack
-- **LangChain**: Orchestration and RAG chains.
-- **FAISS**: High-performance local vector storage.
-- **Flask**: Lightweight web server for the UI.
-- **Ollama**: Local LLM runner.
+- **LangChain**: RAG orchestration and chains
+- **FAISS**: High-performance local vector storage
+- **Flask**: Lightweight web framework
+- **Ollama**: Local LLM inference engine
+- **Python 3.14**: Latest Python features
+
+## 📝 Version History
+
+### v2.0.0 "Obsidian" (Current)
+- Complete rebrand to Onyx
+- Bulk delete operations
+- Custom confirmation modals
+- CLI mode toggle switch
+- Responsive header layout
+- Toast notification system
+- Performance improvements
+
+See [ROADMAP](./ROADMAP.md) for future plans.
+
+## 🤝 Contributing
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## 📄 License
+This project is licensed under the MIT License.
+
+## 🙏 Acknowledgments
+Built with ❤️ using open-source AI technologies.
+
+---
+
+**Onyx v2.0.0** - Your data. Your AI. Your control.
+

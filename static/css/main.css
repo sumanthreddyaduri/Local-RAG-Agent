@@ -3809,3 +3809,290 @@ div.bot-message {
     color: #e2e8f0 !important;
     text-align: left;
 }
+
+/* ====================================================
+   FIX: Chat Auto-Scroll to Bottom
+   Parent container must have fixed height for child to scroll
+   ==================================================== */
+#chat-view {
+    display: flex !important;
+    flex-direction: column !important;
+    height: 100% !important;
+    overflow: hidden !important;
+}
+
+#chat-history,
+.chat-messages {
+    flex: 1 1 auto !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    min-height: 0 !important;
+    /* Critical for flex scroll */
+    max-height: calc(100vh - 200px) !important;
+    /* Ensure bounded height */
+    scroll-behavior: smooth;
+}
+
+/* Ensure main content has proper height */
+.main-content {
+    display: flex !important;
+    flex-direction: column !important;
+    height: 100% !important;
+    overflow: hidden !important;
+}
+
+.view-section {
+    flex: 1 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    height: 100% !important;
+    overflow: hidden !important;
+}
+
+/* ====================================================
+   Model Dropdown Styles
+   ==================================================== */
+.model-dropdown.hidden {
+    display: none !important;
+}
+
+.model-option {
+    color: var(--text-color);
+    font-size: 0.9em;
+}
+
+.model-option:hover {
+    background: var(--accent-color) !important;
+    color: white !important;
+}
+
+.model-option.active {
+    background: var(--accent-color);
+    color: white;
+    font-weight: 600;
+}
+
+/* Native Select Dropdown Styling */
+#model-select {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    background-size: 16px;
+    padding-right: 32px !important;
+}
+
+#model-select:hover {
+    border-color: var(--accent-color);
+}
+
+#model-select:focus {
+    outline: none;
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+}
+
+#model-select option {
+    background: var(--card-bg);
+    color: var(--text-color);
+    padding: 10px;
+}
+
+#model-select option:hover,
+#model-select option:checked {
+    background: var(--accent-color);
+    color: white;
+}
+
+/* ====================================================
+   Choices.js Dark Theme & Rounded Corners
+   ==================================================== */
+.model-choices .choices__inner {
+    background: var(--card-bg) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: 12px !important;
+    padding: 6px 12px !important;
+    min-height: 36px !important;
+    color: var(--text-color) !important;
+}
+
+.model-choices .choices__list--single .choices__item {
+    color: var(--text-color) !important;
+}
+
+.model-choices .choices__list--dropdown {
+    background: var(--card-bg) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: 12px !important;
+    margin-top: 4px !important;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important;
+    overflow: hidden !important;
+}
+
+.model-choices .choices__list--dropdown .choices__item {
+    color: var(--text-color) !important;
+    padding: 10px 14px !important;
+}
+
+.model-choices .choices__list--dropdown .choices__item--selectable.is-highlighted {
+    background: var(--accent-color) !important;
+    color: white !important;
+}
+
+.model-choices .choices__list--dropdown .choices__item--selectable.is-selected {
+    background: rgba(99, 102, 241, 0.3) !important;
+}
+
+.model-choices .choices[data-type*=select-one]::after {
+    border-color: var(--text-color) transparent transparent transparent !important;
+}
+
+.model-choices .choices[data-type*=select-one].is-open::after {
+    border-color: transparent transparent var(--text-color) transparent !important;
+}
+
+/* ====================================================
+   Voice Input Waveform Animation
+   ==================================================== */
+#voice-waveform {
+    display: none;
+}
+
+#voice-waveform.active {
+    display: flex !important;
+}
+
+.wave-bar {
+    width: 4px;
+    height: 8px;
+    background: var(--error-color);
+    border-radius: 2px;
+    animation: wave 0.5s ease-in-out infinite;
+}
+
+.wave-bar:nth-child(1) { animation-delay: 0.0s; }
+.wave-bar:nth-child(2) { animation-delay: 0.1s; }
+.wave-bar:nth-child(3) { animation-delay: 0.2s; }
+.wave-bar:nth-child(4) { animation-delay: 0.15s; }
+.wave-bar:nth-child(5) { animation-delay: 0.25s; }
+.wave-bar:nth-child(6) { animation-delay: 0.05s; }
+.wave-bar:nth-child(7) { animation-delay: 0.3s; }
+.wave-bar:nth-child(8) { animation-delay: 0.1s; }
+.wave-bar:nth-child(9) { animation-delay: 0.2s; }
+.wave-bar:nth-child(10) { animation-delay: 0.15s; }
+
+@keyframes wave {
+    0%, 100% {
+        height: 8px;
+    }
+    50% {
+        height: 24px;
+    }
+}
+
+/* Dynamic wave height for volume reactivity - controlled by JS */
+.wave-bar.low { animation: wave-low 0.4s ease-in-out infinite; }
+.wave-bar.medium { animation: wave-medium 0.3s ease-in-out infinite; }
+.wave-bar.high { animation: wave-high 0.2s ease-in-out infinite; }
+
+@keyframes wave-low {
+    0%, 100% { height: 4px; }
+    50% { height: 12px; }
+}
+
+@keyframes wave-medium {
+    0%, 100% { height: 8px; }
+    50% { height: 20px; }
+}
+
+@keyframes wave-high {
+    0%, 100% { height: 12px; }
+    50% { height: 28px; }
+}
+
+/* Voice Toggle Active State */
+.icon-btn.active {
+    color: var(--accent-color);
+    background-color: rgba(99, 102, 241, 0.1);
+}
+
+/* Thinking Process UI */
+.thinking-block {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    margin-bottom: 10px;
+    overflow: hidden;
+    font-size: 0.85em;
+    animation: fadeIn 0.3s ease;
+}
+
+.thinking-header {
+    padding: 8px 12px;
+    background: rgba(0, 0, 0, 0.2);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.thinking-header:hover {
+    color: var(--text-color);
+}
+
+.thinking-content {
+    padding: 10px 12px;
+    border-top: 1px solid var(--border-color);
+    color: var(--text-muted);
+    font-family: 'Consolas', monospace;
+    white-space: pre-wrap;
+    display: none; /* Collapsed by default */
+}
+
+.thinking-block.open .thinking-content {
+    display: block;
+}
+
+.thinking-spinner {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--text-secondary);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+/* Interactive Citations */
+.source-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background-color: rgba(99, 102, 241, 0.1);
+    border: 1px solid var(--border-color);
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.8em;
+    color: var(--accent-color);
+    cursor: pointer;
+    transition: all 0.2s;
+    margin: 2px 4px 2px 0;
+    text-decoration: none;
+}
+
+.source-badge:hover {
+    background-color: var(--accent-color);
+    color: white;
+    border-color: var(--accent-color);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+
+@keyframes spin { 
+    from { transform: rotate(0deg); } 
+    to { transform: rotate(360deg); } 
+}
