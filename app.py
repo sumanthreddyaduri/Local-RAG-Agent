@@ -917,6 +917,76 @@ def list_indexed_files():
     return jsonify({"files": files, "count": len(files)})
 
 
+@app.route("/api/documents", methods=["GET"])
+def list_documents():
+    """Get list of indexed documents with metadata (frontend compatibility)."""
+    files = get_indexed_files()
+    documents = []
+    
+    for filepath in files:
+        filename = os.path.basename(filepath)
+        stat_info = None
+        
+        # Try to get file stats if file exists
+        if os.path.exists(filepath):
+            stat_info = os.stat(filepath)
+        
+        ext = os.path.splitext(filename)[1].lower()
+        
+        # Determine file type
+        file_type = "document"
+        if ext == ".pdf":
+            file_type = "pdf"
+        elif ext in [".txt", ".md"]:
+            file_type = "text"
+        elif ext in [".doc", ".docx"]:
+            file_type = "word"
+        elif ext in [".csv"]:
+            file_type = "csv"
+        
+        doc_info = {
+            "name": filename,
+            "path": filepath,
+            "extension": ext,
+            "type": file_type,
+            "indexed": True  # All files returned here are indexed
+        }
+        
+        if stat_info:
+            doc_info["size"] = stat_info.st_size
+            doc_info["size_formatted"] = format_file_size(stat_info.st_size)
+            doc_info["modified"] = stat_info.st_mtime
+        else:
+            # File was indexed but no longer exists
+            doc_info["size"] = 0
+            doc_info["size_formatted"] = "N/A"
+            doc_info["modified"] = 0
+            doc_info["missing"] = True
+        
+        documents.append(doc_info)
+    
+    # Sort by name
+    documents.sort(key=lambda x: x["name"])
+    return jsonify({"documents": documents, "count": len(documents)})
+
+
+@app.route("/api/documents/<path:filename>", methods=["DELETE"])
+def delete_document(filename):
+    """Delete an indexed document."""
+    # Delete the physical file if it exists in uploads
+    filepath = os.path.join(UPLOAD_DIR, filename)
+    if os.path.exists(filepath):
+        try:
+            os.remove(filepath)
+            # Note: File will still be in FAISS index until index is rebuilt
+            return jsonify({"status": "success", "message": f"Deleted {filename}. Rebuild index to fully remove."})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    
+    return jsonify({"error": "File not found"}), 404
+
+
+
 # ============== FILE MANAGEMENT API ==============
 
 @app.route("/api/files", methods=["GET"])
