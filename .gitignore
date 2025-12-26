@@ -1,10 +1,32 @@
+# Python
 venv/
 __pycache__/
 *.pyc
+
+# Data & Indexes
 faiss_index/
 uploaded_files/
-.env
-.DS_Store
-*.db
 bm25_index.pkl
+*.db
+
+# Environment & Config
+.env
+
+# System Files
+.DS_Store
 *.log
+
+# Documentation (internal)
+docs/
+
+# Tests
+tests/
+test_*.py
+test_*.png
+
+# Browser state files
+.browser_opened
+
+# Setup scripts (already documented in README)
+setup-path.bat
+
