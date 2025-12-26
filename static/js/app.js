@@ -1258,7 +1258,8 @@ async function sendMessage() {
             const data = await response.json();
             if (data.session_id) {
                 currentSessionId = data.session_id;
-                loadSessions();
+                // Don't call loadSessions() here - it will be called at the end
+                // This prevents potential duplicate loading
             }
         } catch (e) {
             showToast('Failed to create session', 'error');
