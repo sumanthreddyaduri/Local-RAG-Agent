@@ -3936,13 +3936,8 @@
         })();
 
 
-        // Add Enter key listener
-        document.getElementById('chat-input').addEventListener('keypress', function (e) {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-            }
-        });
+        // Enter key listener REMOVED - handled in app.js to prevent duplicate events
+
 
         // Initial Load
         loadSessions();
