@@ -32,20 +32,33 @@ exit /b 0
 echo Checking Onyx status...
 echo.
 set "FOUND=0"
-for /f "tokens=2" %%a in ('tasklist /FI "IMAGENAME eq python.exe" /FO LIST ^| findstr "PID"') do (
-    for /f %%b in ('wmic process where "ProcessId=%%a" get CommandLine /format:list 2^>nul ^| findstr /C:"start_app.py"') do (
-        set "FOUND=1"
-        echo [92mOnyx is RUNNING[0m
-        echo PID: %%a
-        echo URL: http://localhost:8501
-        goto :statusend
-    )
+
+REM Use tasklist to find python.exe processes, then check CommandLine
+for /f "skip=3 tokens=2" %%p in ('tasklist /FI "IMAGENAME eq python.exe" /FO TABLE /NH') do (
+    call :check_pid %%p
+    if "!FOUND!"=="1" goto :statusend
 )
+
 :statusend
 if "%FOUND%"=="0" (
     echo [91mOnyx is NOT running[0m
     echo To start: .\onyx start
 )
+exit /b 0
+
+:check_pid
+setlocal enabledelayedexpansion
+set "PID=%1"
+for /f "tokens=*" %%c in ('wmic process where "ProcessId=%PID%" get CommandLine 2^>nul ^| findstr "start_app.py"') do (
+    set "FOUND=1"
+    echo [92mOnyx is RUNNING[0m
+    echo PID: %PID%
+    echo URL: http://localhost:8501
+    endlocal
+    set "FOUND=1"
+    exit /b 0
+)
+endlocal
 exit /b 0
 
 :setup

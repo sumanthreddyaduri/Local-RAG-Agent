@@ -368,8 +368,10 @@ def get_rag_chain(model_name: str = None) -> Tuple[Optional[Any], ChatOllama]:
     
     # Return cached retriever if available
     if _CACHED_RETRIEVER is not None:
+        print(f"✓ Using cached FAISS retriever (cache hit)")
         return _CACHED_RETRIEVER, llm
     
+    print(f"→ Loading FAISS retriever from disk (cache miss)...")
     try:
         embeddings = OllamaEmbeddings(model=embed_model, base_url=ollama_host)
         _CACHED_DB = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
