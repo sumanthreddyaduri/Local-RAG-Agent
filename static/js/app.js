@@ -724,17 +724,18 @@ function showContextMenu(event, type, id) {
     event.stopPropagation();
     const menu = document.getElementById('context-menu');
 
-    // Escape single quotes for inline onclick handlers
-    const safeId = id.replace(/'/g, "\\'");
+    // Store the target filename/id for event handlers
+    menu.dataset.targetId = id;
+    menu.dataset.targetType = type;
 
     let items = '';
     if (type === 'indexed') {
         items = `
-            <div class="context-menu-item" onclick="showPreview('${safeId}')">
+            <div class="context-menu-item" data-action="preview">
                 <img src="https://img.icons8.com/ios/20/ffffff/file-preview.png" alt="Preview" style="width:16px;height:16px;vertical-align:middle;margin-right:6px;"> Preview
             </div>
 
-            <div class="context-menu-item danger" onclick="deleteFile('${safeId}')">
+            <div class="context-menu-item danger" data-action="delete">
                 <img src="https://img.icons8.com/color/20/filled-trash.png" alt="Delete" style="width:16px;height:16px;vertical-align:middle;margin-right:6px;"> Remove
             </div>
 
@@ -742,6 +743,26 @@ function showContextMenu(event, type, id) {
 
     }
     menu.innerHTML = items;
+
+    // Add event delegation for menu items
+    const menuItems = menu.querySelectorAll('.context-menu-item');
+    menuItems.forEach(item => {
+        item.addEventListener('click', function (e) {
+            e.stopPropagation();
+            const action = this.dataset.action;
+            const targetId = menu.dataset.targetId;
+
+            if (action === 'delete') {
+                deleteFile(targetId);
+            } else if (action === 'preview') {
+                showPreview(targetId);
+            }
+
+            // Close menu after action
+            menu.classList.remove('visible');
+            menu.style.display = 'none';
+        });
+    });
 
     let x = event.clientX;
     let y = event.clientY;
