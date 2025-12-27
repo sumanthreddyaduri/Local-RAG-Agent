@@ -336,21 +336,46 @@ def ingest_files(file_paths: List[str]) -> Tuple[bool, str]:
     return True, success_msg
 
 
+def get_vector_store() -> Optional[FAISS]:
+    """
+    Get the FAISS vector store, using cache if available.
+    """
+    global _CACHED_DB
+    
+    config = load_config()
+    db_path = config.get('db_path', 'faiss_index')
+    embed_model = config.get('embed_model', 'nomic-embed-text')
+    ollama_host = config.get('ollama_host', 'http://localhost:11434')
+    
+    if _CACHED_DB is not None:
+        return _CACHED_DB
+        
+    if not os.path.exists(db_path):
+        return None
+        
+    try:
+        print("→ Loading FAISS index from disk (cache miss)...")
+        embeddings = OllamaEmbeddings(model=embed_model, base_url=ollama_host)
+        _CACHED_DB = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
+        return _CACHED_DB
+    except Exception as e:
+        print(f"Error loading vector store: {e}")
+        return None
+
+
 def get_rag_chain(model_name: str = None) -> Tuple[Optional[Any], ChatOllama]:
     """
     Returns the Retrieval Chain with the selected model.
     Uses global caching to prevent disk I/O on every chat call.
     Supports hybrid search if enabled in config.
     """
-    global _CACHED_DB, _CACHED_BM25, _CACHED_RETRIEVER, _CACHED_LLM, _CACHED_MODEL_NAME
+    global _CACHED_RETRIEVER, _CACHED_LLM, _CACHED_MODEL_NAME, _CACHED_BM25
     
     config = load_config()
     
     if model_name is None:
         model_name = config.get('model', 'gemma3:270m')
     
-    db_path = config.get('db_path', 'faiss_index')
-    embed_model = config.get('embed_model', 'nomic-embed-text')
     use_hybrid = config.get('use_hybrid_search', True)
     hybrid_alpha = config.get('hybrid_alpha', 0.5)
     retrieval_k = config.get('retrieval_k', 3)
@@ -363,32 +388,32 @@ def get_rag_chain(model_name: str = None) -> Tuple[Optional[Any], ChatOllama]:
     
     llm = _CACHED_LLM
     
-    if not os.path.exists(db_path):
+    # Get vector store (cached)
+    db = get_vector_store()
+    if db is None:
         return None, llm
     
     # Return cached retriever if available
     if _CACHED_RETRIEVER is not None:
-        print(f"✓ Using cached FAISS retriever (cache hit)")
+        print(f"✓ Using cached retriever (cache hit)")
         return _CACHED_RETRIEVER, llm
     
-    print(f"→ Loading FAISS retriever from disk (cache miss)...")
     try:
-        embeddings = OllamaEmbeddings(model=embed_model, base_url=ollama_host)
-        _CACHED_DB = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
-        
         if use_hybrid:
             # Load BM25 index for hybrid search
-            _CACHED_BM25 = BM25Index.load(BM25_INDEX_PATH)
+            if _CACHED_BM25 is None:
+                _CACHED_BM25 = BM25Index.load(BM25_INDEX_PATH)
+            
             if _CACHED_BM25:
-                _CACHED_RETRIEVER = HybridRetriever(_CACHED_DB, _CACHED_BM25, alpha=hybrid_alpha)
+                _CACHED_RETRIEVER = HybridRetriever(db, _CACHED_BM25, alpha=hybrid_alpha)
                 return _CACHED_RETRIEVER, llm
         
         # Fall back to vector-only search
-        _CACHED_RETRIEVER = _CACHED_DB.as_retriever(search_kwargs={"k": retrieval_k})
+        _CACHED_RETRIEVER = db.as_retriever(search_kwargs={"k": retrieval_k})
         return _CACHED_RETRIEVER, llm
         
     except Exception as e:
-        print(f"Error loading vector store: {e}")
+        print(f"Error initializing retriever: {e}")
         return None, llm
 
 
@@ -420,17 +445,12 @@ def clear_index() -> Tuple[bool, str]:
 
 def get_indexed_files() -> List[str]:
     """Get list of files that have been indexed."""
-    config = load_config()
-    db_path = config.get('db_path', 'faiss_index')
-    embed_model = config.get('embed_model', 'nomic-embed-text')
+    db = get_vector_store()
     
-    if not os.path.exists(db_path):
+    if not db:
         return []
     
     try:
-        embeddings = OllamaEmbeddings(model=embed_model)
-        db = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
-        
         # Get unique sources from docstore
         sources = set()
         for doc_id in db.docstore._dict:
@@ -446,10 +466,6 @@ def get_indexed_files() -> List[str]:
 
 def get_index_stats() -> dict:
     """Get statistics about the current index."""
-    config = load_config()
-    db_path = config.get('db_path', 'faiss_index')
-    embed_model = config.get('embed_model', 'nomic-embed-text')
-    
     stats = {
         "total_chunks": 0,
         "total_files": 0,
@@ -457,13 +473,12 @@ def get_index_stats() -> dict:
         "bm25_available": False
     }
     
-    if not os.path.exists(db_path):
+    db = get_vector_store()
+    
+    if not db:
         return stats
     
     try:
-        embeddings = OllamaEmbeddings(model=embed_model)
-        db = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
-        
         stats["total_chunks"] = len(db.docstore._dict)
         stats["files"] = get_indexed_files()
         stats["total_files"] = len(stats["files"])
