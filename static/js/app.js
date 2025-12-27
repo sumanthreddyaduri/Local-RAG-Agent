@@ -276,12 +276,12 @@ async function loadFiles() {
     }
 
     try {
-        const response = await fetch('/api/files');
+        const response = await fetch('/api/documents');
         const data = await response.json();
-        renderFiles(data.files || []);
+        renderFiles(data.documents || []);
     } catch (e) {
-        console.error('Failed to load files:', e);
-        container.innerHTML = '<div class="empty-state"><p>Failed to load files</p></div>';
+        console.error('Failed to load documents:', e);
+        container.innerHTML = '<div class="empty-state"><p>Failed to load documents</p></div>';
     }
 }
 
@@ -375,20 +375,25 @@ function clearSelection() {
 }
 
 // Fix: Single Delete
+// Fix: Single Delete
 async function deleteFile(filename) {
     if (!confirm(`Delete "${filename}"?`)) return;
 
     showToast('Deleting...', 'info');
+    console.log('Deleting file:', filename); // Debug log
+
     try {
-        const response = await fetch(`/api/files/${encodeURIComponent(filename)}`, {
+        // Use the new /api/documents endpoint which handles index removal + file deletion
+        const response = await fetch(`/api/documents/${encodeURIComponent(filename)}`, {
             method: 'DELETE'
         });
         const data = await response.json();
 
         if (data.status === 'success') {
-            loadFiles();
-            loadStats();
+            loadFiles(); // Reload the document list
+            loadStats(); // Reload stats
             showToast('File deleted', 'success');
+            
             // Ensure menu closes
             const menu = document.getElementById('context-menu');
             if (menu) {
@@ -751,7 +756,7 @@ function showContextMenu(event, type, id) {
             e.stopPropagation();
             const action = this.dataset.action;
             const targetId = menu.dataset.targetId;
-            
+
             console.log('Context menu action:', action, 'Target ID:', targetId);
 
             if (action === 'delete') {
