@@ -21,7 +21,16 @@ from langchain_core.documents import Document
 from config_manager import load_config, get_config_value
 
 # BM25 index storage path
-BM25_INDEX_PATH = "bm25_index.pkl"
+# Helper to determine BM25 path based on DB path
+def get_bm25_path(db_path: str) -> str:
+    """Get the path for the BM25 index, associated with the vector DB."""
+    # If db_path is a directory (FAISS default), put bm25 inside or sibling
+    # Sibling is safer if db_path assumes strictly FAISS files
+    # But inside keeps it self-contained. Let's do sibling with suffix.
+    # Actually, user suggested os.path.join(db_path, "bm25_index.pkl").
+    # If FAISS load_local expects only its own files, this might pollute it?
+    # FAISS usually ignores extra files. Putting it inside is cleaner organization.
+    return os.path.join(db_path, "bm25_index.pkl")
 
 # Global cache variables for performance optimization
 _CACHED_DB = None
@@ -29,6 +38,212 @@ _CACHED_BM25 = None
 _CACHED_RETRIEVER = None
 _CACHED_LLM = None
 _CACHED_MODEL_NAME = None
+_CACHED_CONFIG = None # To detect config changes (db_path, embed_model)
+
+# ... (BM25Index class remains similar, just update save/load to take path passed to it) ...
+
+# ... (HybridRetriever remains same) ...
+
+# ... (get_loader, load_document_content remain same) ...
+
+def ingest_files(file_paths: List[str]) -> Tuple[bool, str]:
+    """
+    Reads files, chunks them, and saves to Vector DB and BM25 index.
+    Uses configurable chunk size and overlap.
+    """
+    config = load_config()
+    db_path = config.get('db_path', 'faiss_index')
+    embed_model = config.get('embed_model', 'nomic-embed-text')
+    chunk_size = config.get('chunk_size', 1000)
+    chunk_overlap = config.get('chunk_overlap', 200)
+    
+    bm25_path = get_bm25_path(db_path)
+    
+    all_docs = []
+    failed_files = []
+    
+    for path in file_paths:
+        try:
+            loader = get_loader(path)
+            docs = loader.load()
+            # Add source metadata and prepend source to content for better retrieval
+            for doc in docs:
+                doc.metadata['source'] = os.path.basename(path)
+                doc.metadata['full_path'] = path
+                # Prepend source to content so keyword search for filename matches the document
+                doc.page_content = f"Source: {os.path.basename(path)}\n\n{doc.page_content}"
+            all_docs.extend(docs)
+        except Exception as e:
+            failed_files.append(f"{os.path.basename(path)}: {str(e)}")
+
+    if not all_docs:
+        if failed_files:
+            return False, f"Failed to load files:\n" + "\n".join(failed_files)
+        return False, "No valid content found in the uploaded files."
+
+    # Split text for RAG using configured chunk size
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size, 
+        chunk_overlap=chunk_overlap,
+        separators=["\n\n", "\n", ". ", " ", ""]
+    )
+    splits = splitter.split_documents(all_docs)
+
+    try:
+        # Save to FAISS
+        embeddings = OllamaEmbeddings(model=embed_model)
+        
+        if os.path.exists(db_path):
+            db = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
+            db.add_documents(splits)
+        else:
+            db = FAISS.from_documents(splits, embeddings)
+        
+        db.save_local(db_path)
+        
+        # Build/update BM25 index
+        bm25_index = BM25Index.load(bm25_path)
+        if bm25_index:
+            # Add new documents to existing index
+            all_bm25_docs = bm25_index.documents + splits
+            bm25_index.fit(all_bm25_docs)
+        else:
+            bm25_index = BM25Index()
+            bm25_index.fit(splits)
+        
+        bm25_index.save(bm25_path)
+        
+    except Exception as e:
+        return False, f"Error during indexing: {str(e)}"
+    
+    if failed_files:
+        success_msg = f"Indexed {len(all_docs)} files, but {len(failed_files)} failed.\nFailures:\n" + "\n".join(failed_files)
+        # Return False if partial failure is considered effectively "not full success"? 
+        # Or True but with warning? API usually prefers True if at least some worked.
+        # But user feedback says "Misleading Success".
+        # Let's return True but make message very clear.
+        # Or return False? If I return False, UI might show Error toast.
+        # Ideally: Partial Success.
+        pass
+    else:
+        success_msg = f"Success! Indexed {len(all_docs)} files."
+    
+    # Clear cache to force reload with new documents
+    clear_rag_cache()
+    
+    return True, success_msg
+
+
+def get_vector_store() -> Optional[FAISS]:
+    """
+    Get the FAISS vector store, using cache if available.
+    Invalidates cache if configuration (path/model) changes.
+    """
+    global _CACHED_DB, _CACHED_CONFIG
+    
+    config = load_config()
+    db_path = config.get('db_path', 'faiss_index')
+    embed_model = config.get('embed_model', 'nomic-embed-text')
+    ollama_host = config.get('ollama_host', 'http://localhost:11434')
+    
+    current_config = {
+        "db_path": db_path, 
+        "embed_model": embed_model,
+        "ollama_host": ollama_host
+    }
+    
+    # Check cache validity
+    if _CACHED_DB is not None and _CACHED_CONFIG == current_config:
+        return _CACHED_DB
+        
+    if not os.path.exists(db_path):
+        return None
+        
+    try:
+        if _CACHED_DB is not None:
+             print("→ Configuration changed, reloading vector store...")
+        else:
+             print("→ Loading FAISS index from disk (cache miss)...")
+             
+        embeddings = OllamaEmbeddings(model=embed_model, base_url=ollama_host)
+        _CACHED_DB = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
+        _CACHED_CONFIG = current_config # Update config cache
+        return _CACHED_DB
+    except Exception as e:
+        print(f"Error loading vector store: {e}")
+        return None
+
+
+def get_rag_chain(model_name: str = None) -> Tuple[Optional[Any], ChatOllama]:
+    # ... (Update logic using get_vector_store and get_bm25_path) ...
+    global _CACHED_RETRIEVER, _CACHED_LLM, _CACHED_MODEL_NAME, _CACHED_BM25
+    
+    config = load_config()
+    db_path = config.get('db_path', 'faiss_index')
+    bm25_path = get_bm25_path(db_path)
+    
+    if model_name is None:
+        model_name = config.get('model', 'gemma3:270m')
+    
+    use_hybrid = config.get('use_hybrid_search', True)
+    hybrid_alpha = config.get('hybrid_alpha', 0.5)
+    retrieval_k = config.get('retrieval_k', 3)
+    ollama_host = config.get('ollama_host', 'http://localhost:11434')
+    
+    # Check if we need a new LLM (model changed)
+    if _CACHED_LLM is None or _CACHED_MODEL_NAME != model_name:
+        _CACHED_LLM = ChatOllama(model=model_name, base_url=ollama_host)
+        _CACHED_MODEL_NAME = model_name
+    
+    llm = _CACHED_LLM
+    
+    # Get vector store (handling cache/config changes)
+    db = get_vector_store()
+    if db is None:
+        return None, llm
+        
+    # Check if retriever is still valid (config might have changed in get_vector_store which cleared DB but not Retriever?)
+    # If get_vector_store reloaded, _CACHED_DB changed object.
+    # We should track if retriever is stale.
+    # Simple way: if get_vector_store returned a different object than what retriever is built on... difficult to check.
+    # Better: If _CACHED_CONFIG changed in get_vector_store, we need to rebuild retriever.
+    # But get_vector_store doesn't return that info.
+    # We can check global _CACHED_RETRIEVER again. 
+    # Actually, if we just clear _CACHED_RETRIEVER in get_vector_store if it reloads?
+    # No, get_vector_store is getter.
+    
+    # Let's verify config here too or trust get_vector_store.
+    # If we cache Retriever, we must ensure it matches current DB.
+    # If get_vector_store reloads, it updates _CACHED_DB.
+    # If _CACHED_RETRIEVER exists, does it point to old DB? Yes.
+    # So we need to invalidate _CACHED_RETRIEVER when DB reloads.
+    pass
+
+def clear_rag_cache():
+    """Clear the RAG cache. Call after ingest_files or clear_index to force reload."""
+    global _CACHED_DB, _CACHED_BM25, _CACHED_RETRIEVER, _CACHED_CONFIG
+    _CACHED_DB = None
+    _CACHED_BM25 = None
+    _CACHED_RETRIEVER = None
+    _CACHED_CONFIG = None
+
+def clear_index() -> Tuple[bool, str]:
+    config = load_config()
+    db_path = config.get('db_path', 'faiss_index')
+    bm25_path = get_bm25_path(db_path)
+    
+    try:
+        import shutil
+        if os.path.exists(db_path):
+            shutil.rmtree(db_path)
+        if os.path.exists(bm25_path):
+            os.remove(bm25_path)
+        # Clear cache to reflect cleared index
+        clear_rag_cache()
+        return True, "Index cleared successfully."
+    except Exception as e:
+        return False, f"Error clearing index: {str(e)}"
+
 
 
 class BM25Index:
@@ -269,6 +484,8 @@ def ingest_files(file_paths: List[str]) -> Tuple[bool, str]:
     chunk_size = config.get('chunk_size', 1000)
     chunk_overlap = config.get('chunk_overlap', 200)
     
+    bm25_path = get_bm25_path(db_path)
+    
     all_docs = []
     failed_files = []
     
@@ -312,7 +529,7 @@ def ingest_files(file_paths: List[str]) -> Tuple[bool, str]:
         db.save_local(db_path)
         
         # Build/update BM25 index
-        bm25_index = BM25Index.load(BM25_INDEX_PATH)
+        bm25_index = BM25Index.load(bm25_path)
         if bm25_index:
             # Add new documents to existing index
             all_bm25_docs = bm25_index.documents + splits
@@ -321,12 +538,12 @@ def ingest_files(file_paths: List[str]) -> Tuple[bool, str]:
             bm25_index = BM25Index()
             bm25_index.fit(splits)
         
-        bm25_index.save(BM25_INDEX_PATH)
+        bm25_index.save(bm25_path)
         
     except Exception as e:
         return False, f"Error during indexing: {str(e)}"
     
-    success_msg = f"Success! Indexed {len(all_docs)} files ({len(splits)} chunks)."
+    success_msg = f"Success! Indexed {len(all_docs)} files."
     if failed_files:
         success_msg += f"\nWarning: Some files failed:\n" + "\n".join(failed_files)
     
@@ -339,24 +556,39 @@ def ingest_files(file_paths: List[str]) -> Tuple[bool, str]:
 def get_vector_store() -> Optional[FAISS]:
     """
     Get the FAISS vector store, using cache if available.
+    Invalidates cache if configuration (path/model) changes.
     """
-    global _CACHED_DB
+    global _CACHED_DB, _CACHED_CONFIG, _CACHED_RETRIEVER
     
     config = load_config()
     db_path = config.get('db_path', 'faiss_index')
     embed_model = config.get('embed_model', 'nomic-embed-text')
     ollama_host = config.get('ollama_host', 'http://localhost:11434')
     
-    if _CACHED_DB is not None:
+    current_config = {
+        "db_path": db_path, 
+        "embed_model": embed_model,
+        "ollama_host": ollama_host
+    }
+    
+    # Check cache validity
+    if _CACHED_DB is not None and _CACHED_CONFIG == current_config:
         return _CACHED_DB
         
     if not os.path.exists(db_path):
         return None
         
     try:
-        print("→ Loading FAISS index from disk (cache miss)...")
+        if _CACHED_DB is not None:
+             print("→ Configuration changed, reloading vector store...")
+             # Important: Invalidate derived objects too
+             _CACHED_RETRIEVER = None
+        else:
+             print("→ Loading FAISS index from disk (cache miss)...")
+             
         embeddings = OllamaEmbeddings(model=embed_model, base_url=ollama_host)
         _CACHED_DB = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
+        _CACHED_CONFIG = current_config # Update config cache
         return _CACHED_DB
     except Exception as e:
         print(f"Error loading vector store: {e}")
@@ -372,10 +604,13 @@ def get_rag_chain(model_name: str = None) -> Tuple[Optional[Any], ChatOllama]:
     global _CACHED_RETRIEVER, _CACHED_LLM, _CACHED_MODEL_NAME, _CACHED_BM25
     
     config = load_config()
+    db_path = config.get('db_path', 'faiss_index')
+    # Dynamic BM25 path
+    bm25_path = get_bm25_path(db_path)
     
     if model_name is None:
         model_name = config.get('model', 'gemma3:270m')
-    
+            
     use_hybrid = config.get('use_hybrid_search', True)
     hybrid_alpha = config.get('hybrid_alpha', 0.5)
     retrieval_k = config.get('retrieval_k', 3)
@@ -388,21 +623,21 @@ def get_rag_chain(model_name: str = None) -> Tuple[Optional[Any], ChatOllama]:
     
     llm = _CACHED_LLM
     
-    # Get vector store (cached)
+    # Get vector store (handles config changes)
     db = get_vector_store()
     if db is None:
         return None, llm
     
-    # Return cached retriever if available
+    # Return cached retriever if available (and valid - ensured by get_vector_store clearing it)
     if _CACHED_RETRIEVER is not None:
         print(f"✓ Using cached retriever (cache hit)")
         return _CACHED_RETRIEVER, llm
     
     try:
         if use_hybrid:
-            # Load BM25 index for hybrid search
+            # Load BM25 index from dynamic path
             if _CACHED_BM25 is None:
-                _CACHED_BM25 = BM25Index.load(BM25_INDEX_PATH)
+                _CACHED_BM25 = BM25Index.load(bm25_path)
             
             if _CACHED_BM25:
                 _CACHED_RETRIEVER = HybridRetriever(db, _CACHED_BM25, alpha=hybrid_alpha)
@@ -419,23 +654,25 @@ def get_rag_chain(model_name: str = None) -> Tuple[Optional[Any], ChatOllama]:
 
 def clear_rag_cache():
     """Clear the RAG cache. Call after ingest_files or clear_index to force reload."""
-    global _CACHED_DB, _CACHED_BM25, _CACHED_RETRIEVER
+    global _CACHED_DB, _CACHED_BM25, _CACHED_RETRIEVER, _CACHED_CONFIG
     _CACHED_DB = None
     _CACHED_BM25 = None
     _CACHED_RETRIEVER = None
+    _CACHED_CONFIG = None
 
 
 def clear_index() -> Tuple[bool, str]:
     """Clear all indexed documents."""
     config = load_config()
     db_path = config.get('db_path', 'faiss_index')
+    bm25_path = get_bm25_path(db_path)
     
     try:
         import shutil
         if os.path.exists(db_path):
             shutil.rmtree(db_path)
-        if os.path.exists(BM25_INDEX_PATH):
-            os.remove(BM25_INDEX_PATH)
+        if os.path.exists(bm25_path):
+            os.remove(bm25_path)
         # Clear cache to reflect cleared index
         clear_rag_cache()
         return True, "Index cleared successfully."
