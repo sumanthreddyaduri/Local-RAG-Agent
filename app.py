@@ -346,6 +346,40 @@ def preview_file(filename):
                 if len(content) == 5000:
                     content += "\n\n... (truncated)"
             return jsonify({"type": "text", "content": content})
+        
+        elif ext == ".pdf":
+            try:
+                from langchain_community.document_loaders import PyPDFLoader
+                loader = PyPDFLoader(filepath)
+                docs = loader.load()
+                if docs:
+                    content = docs[0].page_content[:3000]
+                    if len(docs) > 1:
+                        content += f"\n\n... ({len(docs)} pages total)"
+                    return jsonify({"type": "text", "content": content, "pages": len(docs)})
+            except:
+                pass
+            return jsonify({"type": "info", "content": "PDF preview not available"})
+        
+        elif ext in [".jpg", ".jpeg", ".png", ".gif", ".bmp"]:
+            from PIL import Image as PILImage
+            img = PILImage.open(filepath)
+            return jsonify({
+                "type": "image",
+                "width": img.width,
+                "height": img.height,
+                "format": img.format,
+                "url": f"/uploaded_files/{filename}"
+            })
+        
+        else:
+            return jsonify({
+                "type": "info", 
+                "content": f"Preview not available for {ext} files.\nFile size: {os.path.getsize(filepath)} bytes"
+            })
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 def format_docs(docs):
@@ -884,29 +918,6 @@ def set_mode():
     return jsonify({"status": "success", "mode": mode})
 
 
-@app.route("/upload", methods=["POST"])
-def upload():
-    """Upload and ingest documents into the knowledge base."""
-    if "files" not in request.files:
-        return redirect(url_for("index", message="No file part", status="error"))
-    
-    files = request.files.getlist("files")
-    paths = []
-    
-    for file in files:
-        if file.filename == "": 
-            continue
-        path = os.path.join(UPLOAD_DIR, file.filename)
-        file.save(path)
-        paths.append(path)
-    
-    if paths:
-        success, msg = ingest_files(paths)
-        status = "success" if success else "error"
-        return redirect(url_for("index", message=msg, status=status))
-    
-    return redirect(url_for("index", message="No files selected", status="error"))
-
 
 # ============== MODEL MANAGEMENT API ==============
 
@@ -991,77 +1002,6 @@ def list_sessions():
     sessions = get_all_sessions()
     return jsonify({"sessions": sessions, "current": get_current_session()})
 
-
-@app.route("/api/sessions", methods=["POST"])
-def new_session():
-    """Create a new chat session."""
-    global CURRENT_SESSION_ID
-    data = request.json or {}
-    name = data.get("name")
-    
-    config = load_config()
-    session_id = create_session(name=name, model_used=config.get("model"))
-    CURRENT_SESSION_ID = session_id
-    
-    return jsonify({"status": "success", "session_id": session_id})
-
-
-@app.route("/api/sessions/<int:session_id>", methods=["GET"])
-def get_session_messages(session_id):
-    """Get all messages for a specific session."""
-    messages = get_messages(session_id)
-    return jsonify({"session_id": session_id, "messages": messages})
-
-
-@app.route("/api/sessions/<int:session_id>/switch", methods=["POST"])
-def switch_session(session_id):
-    """Switch to a different chat session."""
-    global CURRENT_SESSION_ID
-    from database import get_session
-    
-    session = get_session(session_id)
-    if not session:
-        return jsonify({"error": "Session not found"}), 404
-    
-    CURRENT_SESSION_ID = session_id
-    messages = get_messages(session_id)
-    return jsonify({"status": "success", "session_id": session_id, "messages": messages})
-
-
-@app.route("/api/sessions/<int:session_id>", methods=["DELETE"])
-def delete_chat_session(session_id):
-    """Delete a chat session."""
-    global CURRENT_SESSION_ID
-    
-    if delete_session(session_id):
-        if CURRENT_SESSION_ID == session_id:
-            CURRENT_SESSION_ID = get_or_create_default_session()
-        return jsonify({"status": "success"})
-    return jsonify({"error": "Session not found"}), 404
-
-
-@app.route("/api/sessions/bulk_delete", methods=["POST"])
-def bulk_delete_sessions():
-    """Delete multiple chat sessions."""
-    global CURRENT_SESSION_ID
-    data = request.json
-    session_ids = data.get("session_ids", [])
-    
-    if not session_ids:
-        return jsonify({"error": "No session IDs provided"}), 400
-        
-    deleted_count = 0
-    for session_id in session_ids:
-        if delete_session(session_id):
-            deleted_count += 1
-            if CURRENT_SESSION_ID == session_id:
-                CURRENT_SESSION_ID = None
-                
-    # If we deleted the current session, reset to default
-    if CURRENT_SESSION_ID is None:
-        CURRENT_SESSION_ID = get_or_create_default_session()
-        
-    return jsonify({"status": "success", "deleted_count": deleted_count})
 
 
 @app.route("/api/sessions/<int:session_id>/clear", methods=["POST"])
@@ -1266,22 +1206,6 @@ def list_documents():
     return jsonify({"documents": documents, "count": len(documents)})
 
 
-@app.route("/api/documents/<path:filename>", methods=["DELETE"])
-def delete_document(filename):
-    """Delete an indexed document."""
-    # Delete the physical file if it exists in uploads
-    filepath = os.path.join(UPLOAD_DIR, filename)
-    if os.path.exists(filepath):
-        try:
-            os.remove(filepath)
-            # Note: File will still be in FAISS index until index is rebuilt
-            return jsonify({"status": "success", "message": f"Deleted {filename}. Rebuild index to fully remove."})
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-    
-    return jsonify({"error": "File not found"}), 404
-
-
 
 # ============== FILE MANAGEMENT API ==============
 
@@ -1341,192 +1265,6 @@ def format_file_size(size_bytes):
     else:
         return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
 
-
-@app.route("/api/files/upload", methods=["POST"])
-def api_upload_files():
-    """Upload files via API (returns JSON instead of redirect)."""
-    if "files" not in request.files:
-        return jsonify({"error": "No files provided"}), 400
-    
-    files = request.files.getlist("files")
-    uploaded = []
-    failed = []
-    
-    for file in files:
-        if file.filename == "":
-            continue
-        
-        try:
-            # Secure the filename
-            filename = file.filename
-            filepath = os.path.join(UPLOAD_DIR, filename)
-            
-            # Handle duplicate filenames
-            counter = 1
-            base_name, ext = os.path.splitext(filename)
-            while os.path.exists(filepath):
-                filename = f"{base_name}_{counter}{ext}"
-                filepath = os.path.join(UPLOAD_DIR, filename)
-                counter += 1
-            
-            file.save(filepath)
-            uploaded.append({
-                "name": filename,
-                "path": filepath,
-                "size": os.path.getsize(filepath),
-                "size_formatted": format_file_size(os.path.getsize(filepath))
-            })
-        except Exception as e:
-            failed.append({"name": file.filename, "error": str(e)})
-    
-    return jsonify({
-        "status": "success" if uploaded else "error",
-        "uploaded": uploaded,
-        "failed": failed,
-        "message": f"Uploaded {len(uploaded)} file(s)" + (f", {len(failed)} failed" if failed else "")
-    })
-
-
-@app.route("/api/files/<path:filename>", methods=["DELETE"])
-def delete_file(filename):
-    """Delete a specific file."""
-    filepath = os.path.join(UPLOAD_DIR, filename)
-    
-    if not os.path.exists(filepath):
-        return jsonify({"error": "File not found"}), 404
-    
-    try:
-        os.remove(filepath)
-        return jsonify({"status": "success", "message": f"Deleted {filename}"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/files/delete-multiple", methods=["POST"])
-def delete_multiple_files():
-    """Delete multiple files at once."""
-    data = request.json
-    filenames = data.get("files", [])
-    
-    if not filenames:
-        return jsonify({"error": "No files specified"}), 400
-    
-    deleted = []
-    failed = []
-    
-    for filename in filenames:
-        filepath = os.path.join(UPLOAD_DIR, filename)
-        try:
-            if os.path.exists(filepath):
-                os.remove(filepath)
-                deleted.append(filename)
-            else:
-                failed.append({"name": filename, "error": "File not found"})
-        except Exception as e:
-            failed.append({"name": filename, "error": str(e)})
-    
-    return jsonify({
-        "status": "success" if deleted else "error",
-        "deleted": deleted,
-        "failed": failed,
-        "message": f"Deleted {len(deleted)} file(s)" + (f", {len(failed)} failed" if failed else "")
-    })
-
-
-@app.route("/api/files/ingest", methods=["POST"])
-def ingest_selected_files():
-    """Ingest specific files into the vector store."""
-    data = request.json
-    filenames = data.get("files", [])
-    
-    if not filenames:
-        return jsonify({"error": "No files specified"}), 400
-    
-    paths = []
-    for filename in filenames:
-        filepath = os.path.join(UPLOAD_DIR, filename)
-        if os.path.exists(filepath):
-            paths.append(filepath)
-    
-    if not paths:
-        return jsonify({"error": "No valid files found"}), 400
-    
-    success, msg = ingest_files(paths)
-    
-    if success:
-        return jsonify({"status": "success", "message": msg})
-    return jsonify({"error": msg}), 500
-
-
-@app.route("/api/files/<path:filename>/ingest", methods=["POST"])
-def ingest_single_file(filename):
-    """Ingest a single file into the vector store."""
-    filepath = os.path.join(UPLOAD_DIR, filename)
-    
-    if not os.path.exists(filepath):
-        return jsonify({"error": "File not found"}), 404
-    
-    success, msg = ingest_files([filepath])
-    
-    if success:
-        return jsonify({"status": "success", "message": msg})
-    return jsonify({"error": msg}), 500
-
-
-@app.route("/api/files/preview/<path:filename>")
-def preview_file(filename):
-    """Get a preview of a file's content."""
-    filepath = os.path.join(UPLOAD_DIR, filename)
-    
-    if not os.path.exists(filepath):
-        return jsonify({"error": "File not found"}), 404
-    
-    ext = os.path.splitext(filename)[1].lower()
-    
-    try:
-        if ext in [".txt", ".md", ".csv"]:
-            # Read text files directly
-            with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read(5000)  # First 5000 chars
-                if len(content) == 5000:
-                    content += "\n\n... (truncated)"
-            return jsonify({"type": "text", "content": content})
-        
-        elif ext == ".pdf":
-            # Get first page text from PDF
-            try:
-                from langchain_community.document_loaders import PyPDFLoader
-                loader = PyPDFLoader(filepath)
-                docs = loader.load()
-                if docs:
-                    content = docs[0].page_content[:3000]
-                    if len(docs) > 1:
-                        content += f"\n\n... ({len(docs)} pages total)"
-                    return jsonify({"type": "text", "content": content, "pages": len(docs)})
-            except:
-                pass
-            return jsonify({"type": "info", "content": "PDF preview not available"})
-        
-        elif ext in [".jpg", ".jpeg", ".png", ".gif", ".bmp"]:
-            # Return image info
-            from PIL import Image as PILImage
-            img = PILImage.open(filepath)
-            return jsonify({
-                "type": "image",
-                "width": img.width,
-                "height": img.height,
-                "format": img.format,
-                "url": f"/uploaded_files/{filename}"
-            })
-        
-        else:
-            return jsonify({
-                "type": "info", 
-                "content": f"Preview not available for {ext} files.\nFile size: {format_file_size(os.path.getsize(filepath))}"
-            })
-            
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 
 # Serve uploaded files for preview
