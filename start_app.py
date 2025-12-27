@@ -11,8 +11,17 @@ LOCK_DIR = os.path.dirname(os.path.abspath(__file__))
 BROWSER_LOCK = os.path.join(LOCK_DIR, ".browser_opened")
 CLI_LOCK = os.path.join(LOCK_DIR, ".cli_opened")
 
+SETUP_MARKER = os.path.join(LOCK_DIR, ".setup_done")
+
 def check_dependencies():
-    """Checks if Ollama is installed and models are pulled."""
+    """Checks if Ollama is installed and models are pulled. Skipped if already verified."""
+    
+    force_check = "--force-check" in sys.argv
+    
+    if os.path.exists(SETUP_MARKER) and not force_check:
+        print("⚡ Skipping dependency check (already satisfied).")
+        return
+
     print("🔍 Checking system dependencies...")
     
     # 1. Check Ollama
@@ -25,7 +34,8 @@ def check_dependencies():
         
     # 2. Check Models
     try:
-        result = subprocess.run(["ollama", "list"], capture_output=True, text=True, check=True)
+        # Add timeout to prevent hanging
+        result = subprocess.run(["ollama", "list"], capture_output=True, text=True, check=True, timeout=10)
         installed_models = result.stdout
         
         missing_models = []
@@ -40,10 +50,17 @@ def check_dependencies():
                 print(f"   ⬇️  Pulling {model}...")
                 subprocess.run(["ollama", "pull", model], check=True)
             print("✅ All models ready!")
+        
+        # Mark setup as done
+        with open(SETUP_MARKER, 'w') as f:
+            f.write(str(time.time()))
             
+    except subprocess.TimeoutExpired:
+        print("\n⚠️ Warning: Ollama check timed out. Assuming models are present to avoid startup delay.")
     except subprocess.CalledProcessError:
         print("\n❌ Error: Failed to communicate with Ollama. Is the server running?")
         sys.exit(1)
+
 
 def is_server_running():
     """Check if the Flask server is already running on port 8501."""
