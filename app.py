@@ -31,26 +31,322 @@ from PIL import Image
 import pytesseract
 
 from tools import TOOL_REGISTRY, TOOL_DEFINITIONS
-from security import analyze_tool_call, DESTRUCTIVE_ACTIONS
+from security import analyze_tool_call, DESTRUCTIVE_ACTIONS, is_safe_path
 
 app = Flask(__name__)
+# ... (lines 37-43 preserved) ...
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploaded_files")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Current active session (thread-safe would require Flask-Login or similar in production)
+# Current active session (fallback only - refrain from updating globally)
 CURRENT_SESSION_ID = None
 
 # Shared memory for browser content (Chrome Extension sync)
+# ideally this should be user-specific, but keeping simple for now
 BROWSER_CONTEXT = {"url": "", "content": "", "title": ""}
 
 
 def get_current_session():
-    """Get or create the current chat session."""
+    """Get or create the current chat session (Fallback if no ID provided)."""
     global CURRENT_SESSION_ID
     if CURRENT_SESSION_ID is None:
         CURRENT_SESSION_ID = get_or_create_default_session()
     return CURRENT_SESSION_ID
+
+# ... (lines 55-585 preserved) ...
+
+@app.route("/upload", methods=["POST"])
+def upload():
+    """Upload and ingest documents into the knowledge base."""
+    if "files" not in request.files:
+        return redirect(url_for("index", message="No file part", status="error"))
+    
+    files = request.files.getlist("files")
+    paths = []
+    
+    for file in files:
+        if file.filename == "": 
+            continue
+            
+        # SECURITY: Check path
+        if not is_safe_path(file.filename):
+             return redirect(url_for("index", message=f"Invalid filename: {file.filename}", status="error"))
+             
+        path = os.path.join(UPLOAD_DIR, file.filename)
+        file.save(path)
+        paths.append(path)
+    
+    if paths:
+        success, msg = ingest_files(paths)
+        status = "success" if success else "error"
+        return redirect(url_for("index", message=msg, status=status))
+    
+    return redirect(url_for("index", message="No files selected", status="error"))
+
+# ... (lines 615-690 preserved) ...
+
+@app.route("/api/sessions", methods=["POST"])
+def new_session():
+    """Create a new chat session."""
+    # Removed global state update
+    data = request.json or {}
+    name = data.get("name")
+    
+    config = load_config()
+    session_id = create_session(name=name, model_used=config.get("model"))
+    
+    return jsonify({"status": "success", "session_id": session_id})
+
+
+@app.route("/api/sessions/<int:session_id>", methods=["GET"])
+def get_session_messages(session_id):
+    """Get all messages for a specific session."""
+    messages = get_messages(session_id)
+    return jsonify({"session_id": session_id, "messages": messages})
+
+
+@app.route("/api/sessions/<int:session_id>/switch", methods=["POST"])
+def switch_session(session_id):
+    """Switch to a different chat session."""
+    # Removed global state update
+    from database import get_session
+    
+    session = get_session(session_id)
+    if not session:
+        return jsonify({"error": "Session not found"}), 404
+    
+    messages = get_messages(session_id)
+    return jsonify({"status": "success", "session_id": session_id, "messages": messages})
+
+
+@app.route("/api/sessions/<int:session_id>", methods=["DELETE"])
+def delete_chat_session(session_id):
+    """Delete a chat session."""
+    # Removed global state update logic (client handles redirect)
+    
+    if delete_session(session_id):
+        return jsonify({"status": "success"})
+    return jsonify({"error": "Session not found"}), 404
+
+
+@app.route("/api/sessions/bulk_delete", methods=["POST"])
+def bulk_delete_sessions():
+    """Delete multiple chat sessions."""
+    # Removed global state logic
+    data = request.json
+    session_ids = data.get("session_ids", [])
+    
+    if not session_ids:
+        return jsonify({"error": "No session IDs provided"}), 400
+        
+    deleted_count = 0
+    for session_id in session_ids:
+        if delete_session(session_id):
+            deleted_count += 1
+                
+    return jsonify({"status": "success", "deleted_count": deleted_count})
+
+# ... (lines 770-970 preserved) ...
+
+@app.route("/api/documents/<path:filename>", methods=["DELETE"])
+def delete_document(filename):
+    """Delete an indexed document."""
+    # SECURITY: Check path
+    if not is_safe_path(filename):
+        return jsonify({"error": "Invalid filename"}), 400
+        
+    # Delete the physical file if it exists in uploads
+    filepath = os.path.join(UPLOAD_DIR, filename)
+    if os.path.exists(filepath):
+        try:
+            os.remove(filepath)
+            # Note: File will still be in FAISS index until index is rebuilt
+            return jsonify({"status": "success", "message": f"Deleted {filename}. Rebuild index to fully remove."})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    
+    return jsonify({"error": "File not found"}), 404
+
+# ... (lines 990-1048 preserved) ...
+
+@app.route("/api/files/upload", methods=["POST"])
+def api_upload_files():
+    """Upload files via API (returns JSON instead of redirect)."""
+    if "files" not in request.files:
+        return jsonify({"error": "No files provided"}), 400
+    
+    files = request.files.getlist("files")
+    uploaded = []
+    failed = []
+    
+    for file in files:
+        if file.filename == "":
+            continue
+            
+        try:
+            # Secure the filename
+            filename = file.filename
+            
+            # SECURITY: Check path
+            if not is_safe_path(filename):
+                failed.append({"name": filename, "error": "Invalid filename (Path traversal detected)"})
+                continue
+            
+            filepath = os.path.join(UPLOAD_DIR, filename)
+            
+            # Handle duplicate filenames
+            counter = 1
+            base_name, ext = os.path.splitext(filename)
+            while os.path.exists(filepath):
+                filename = f"{base_name}_{counter}{ext}"
+                filepath = os.path.join(UPLOAD_DIR, filename)
+                counter += 1
+            
+            file.save(filepath)
+            uploaded.append({
+                "name": filename,
+                "path": filepath,
+                "size": os.path.getsize(filepath),
+                "size_formatted": format_file_size(os.path.getsize(filepath))
+            })
+        except Exception as e:
+            failed.append({"name": file.filename, "error": str(e)})
+    
+    return jsonify({
+        "status": "success" if uploaded else "error",
+        "uploaded": uploaded,
+        "failed": failed,
+        "message": f"Uploaded {len(uploaded)} file(s)" + (f", {len(failed)} failed" if failed else "")
+    })
+
+
+@app.route("/api/files/<path:filename>", methods=["DELETE"])
+def delete_file(filename):
+    """Delete a specific file."""
+    # SECURITY: Check path
+    if not is_safe_path(filename):
+        return jsonify({"error": "Invalid filename"}), 400
+
+    filepath = os.path.join(UPLOAD_DIR, filename)
+    
+    if not os.path.exists(filepath):
+        return jsonify({"error": "File not found"}), 404
+    
+    try:
+        os.remove(filepath)
+        return jsonify({"status": "success", "message": f"Deleted {filename}"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/files/delete-multiple", methods=["POST"])
+def delete_multiple_files():
+    """Delete multiple files at once."""
+    data = request.json
+    filenames = data.get("files", [])
+    
+    if not filenames:
+        return jsonify({"error": "No files specified"}), 400
+    
+    deleted = []
+    failed = []
+    
+    for filename in filenames:
+        # SECURITY: Check path
+        if not is_safe_path(filename):
+            failed.append({"name": filename, "error": "Invalid filename"})
+            continue
+            
+        filepath = os.path.join(UPLOAD_DIR, filename)
+        try:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+                deleted.append(filename)
+            else:
+                failed.append({"name": filename, "error": "File not found"})
+        except Exception as e:
+            failed.append({"name": filename, "error": str(e)})
+    
+    return jsonify({
+        "status": "success" if deleted else "error",
+        "deleted": deleted,
+        "failed": failed,
+        "message": f"Deleted {len(deleted)} file(s)" + (f", {len(failed)} failed" if failed else "")
+    })
+
+
+@app.route("/api/files/ingest", methods=["POST"])
+def ingest_selected_files():
+    """Ingest specific files into the vector store."""
+    data = request.json
+    filenames = data.get("files", [])
+    
+    if not filenames:
+        return jsonify({"error": "No files specified"}), 400
+    
+    paths = []
+    for filename in filenames:
+        # SECURITY: Check path
+        if not is_safe_path(filename):
+             continue 
+             
+        filepath = os.path.join(UPLOAD_DIR, filename)
+        if os.path.exists(filepath):
+            paths.append(filepath)
+    
+    if not paths:
+        return jsonify({"error": "No valid files found"}), 400
+    
+    success, msg = ingest_files(paths)
+    
+    if success:
+        return jsonify({"status": "success", "message": msg})
+    return jsonify({"error": msg}), 500
+
+
+@app.route("/api/files/<path:filename>/ingest", methods=["POST"])
+def ingest_single_file(filename):
+    """Ingest a single file into the vector store."""
+    # SECURITY: Check path
+    if not is_safe_path(filename):
+        return jsonify({"error": "Invalid filename"}), 400
+
+    filepath = os.path.join(UPLOAD_DIR, filename)
+    
+    if not os.path.exists(filepath):
+        return jsonify({"error": "File not found"}), 404
+    
+    success, msg = ingest_files([filepath])
+    
+    if success:
+        return jsonify({"status": "success", "message": msg})
+    return jsonify({"error": msg}), 500
+
+
+@app.route("/api/files/preview/<path:filename>")
+def preview_file(filename):
+    """Get a preview of a file's content."""
+    # SECURITY: Check path
+    if not is_safe_path(filename):
+        return jsonify({"error": "Invalid filename"}), 400
+
+    filepath = os.path.join(UPLOAD_DIR, filename)
+    
+    if not os.path.exists(filepath):
+        return jsonify({"error": "File not found"}), 404
+    
+    ext = os.path.splitext(filename)[1].lower()
+    
+    try:
+        if ext in [".txt", ".md", ".csv"]:
+            # Read text files directly
+            with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read(5000)  # First 5000 chars
+                if len(content) == 5000:
+                    content += "\n\n... (truncated)"
+            return jsonify({"type": "text", "content": content})
+
 
 def format_docs(docs):
     """Format retrieved documents with source information."""
