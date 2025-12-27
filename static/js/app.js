@@ -751,6 +751,8 @@ function showContextMenu(event, type, id) {
             e.stopPropagation();
             const action = this.dataset.action;
             const targetId = menu.dataset.targetId;
+            
+            console.log('Context menu action:', action, 'Target ID:', targetId);
 
             if (action === 'delete') {
                 deleteFile(targetId);
@@ -839,7 +841,7 @@ async function exportSession(sessionId, sessionName, format) {
 async function checkHealth() {
     const dot = document.getElementById('status-dot');
     const text = document.getElementById('status-text');
-    if (!dot) return;
+    if (!dot || !text) return;
 
     dot.className = 'status-dot loading';
     text.innerText = 'Checking...';
