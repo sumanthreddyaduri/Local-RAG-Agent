@@ -16,7 +16,7 @@ exit /b 1
 
 :start
 echo Starting Onyx v2.0.0...
-python start_app.py
+python start_app.py %2 %3 %4 %5 %6 %7 %8 %9
 exit /b 0
 
 :stop
