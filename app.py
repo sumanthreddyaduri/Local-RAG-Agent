@@ -4,6 +4,9 @@ Enhanced Flask Application with Persistent Chat Memory, Health Checks, and Impro
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify, Response, send_from_directory
 import os
+import sys
+import subprocess
+import shutil
 import time
 import json
 import traceback
@@ -905,6 +908,40 @@ def set_model():
     return redirect(url_for("index", message=msg, status="success"))
 
 
+
+def is_cli_running():
+    """Check if the CLI chat process is running."""
+    try:
+        if os.name == 'nt':
+            # Windows: Check for python process with chat.py in command line
+            cmd = 'wmic process where "name=\'python.exe\'" get commandline'
+            output = subprocess.check_output(cmd, shell=True).decode()
+            return "chat.py" in output
+        else:
+            # Unix/Linux
+            cmd = "ps -ef | grep chat.py | grep -v grep"
+            output = subprocess.check_output(cmd, shell=True).decode()
+            return "chat.py" in output
+    except:
+        return False
+
+def launch_cli():
+    """Launch the CLI chat in a new window."""
+    print("Launching CLI Chat...", flush=True)
+    if os.name == 'nt':
+        # Launch in a new command prompt window
+        subprocess.Popen(f'start "Onyx CLI" cmd /k "{sys.executable}" chat.py', shell=True, cwd=os.getcwd())
+    else:
+        # Unix/Linux standard terminal emulators
+        terminals = ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"]
+        for term in terminals:
+            if shutil.which(term):
+                subprocess.Popen([term, "-e", f"{sys.executable} chat.py"])
+                return
+        # Fallback
+        subprocess.Popen([sys.executable, "chat.py"])
+
+
 @app.route("/set_mode", methods=["POST"])
 def set_mode():
     """Toggle between CLI and browser chat modes."""
@@ -915,6 +952,12 @@ def set_mode():
         return jsonify({"error": "Invalid mode"}), 400
     
     update_config({"mode": mode})
+    
+    # If switching to CLI, ensure the window is open
+    if mode == "cli":
+        if not is_cli_running():
+            launch_cli()
+            
     return jsonify({"status": "success", "mode": mode})
 
 
