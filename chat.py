@@ -147,11 +147,10 @@ def main():
                                 line += ch
                         else:
                             time.sleep(0.1)
-                            # Check for mode switch
-                            with open("config.json", "r") as f:
-                                c = json.load(f)
-                                if c.get("mode") == "browser":
-                                    break
+                            # Check for mode switch using cached config
+                            temp_config = load_config()
+                            if temp_config.get("mode") == "browser":
+                                break
                     
                     if config.get("mode") == "browser":
                         continue

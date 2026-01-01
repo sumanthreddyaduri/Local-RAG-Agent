@@ -19,7 +19,8 @@ from database import (
     add_message, get_messages, format_history_for_prompt, 
     delete_session, rename_session, clear_session_messages,
     toggle_pin_session, get_pinned_sessions,
-    create_prompt, get_all_prompts, delete_prompt, search_chat_data
+    create_prompt, get_all_prompts, delete_prompt, search_chat_data,
+    get_total_message_count
 )
 
 from health_check import check_ollama_health, check_model_available, get_system_status
@@ -1157,11 +1158,8 @@ def app_stats():
         sessions = get_all_sessions()
         total_sessions = len(sessions)
         
-        # Calculate total messages
-        total_messages = 0
-        for s in sessions:
-            msgs = get_messages(s['id'])
-            total_messages += len(msgs)
+        # Calculate total messages efficiently with single query
+        total_messages = get_total_message_count()
             
         # Get config for model info
         config = load_config()
@@ -1256,6 +1254,9 @@ def list_uploaded_files():
     files = []
     
     if os.path.exists(UPLOAD_DIR):
+        # Get indexed files once at the beginning (cached already, but still avoid repeated calls)
+        indexed_files_set = set(get_indexed_files())
+        
         for filename in os.listdir(UPLOAD_DIR):
             filepath = os.path.join(UPLOAD_DIR, filename)
             if os.path.isfile(filepath):
@@ -1287,7 +1288,7 @@ def list_uploaded_files():
                     "modified": stat.st_mtime,
                     "extension": ext,
                     "type": file_type,
-                    "indexed": filename in get_indexed_files()
+                    "indexed": filename in indexed_files_set
                 })
     
     # Sort by modified time (newest first)

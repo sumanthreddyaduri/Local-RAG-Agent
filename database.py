@@ -247,6 +247,15 @@ def search_messages(query, limit=20):
         return [dict(row) for row in cursor.fetchall()]
 
 
+def get_total_message_count():
+    """Get the total count of all messages across all sessions (optimized)."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) as count FROM chat_messages')
+        result = cursor.fetchone()
+        return result['count'] if result else 0
+
+
 # Initialize database on module import
 init_db()
 
