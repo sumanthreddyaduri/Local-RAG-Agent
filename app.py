@@ -4,6 +4,7 @@ Enhanced Flask Application with Persistent Chat Memory, Health Checks, and Impro
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify, Response, send_from_directory
 import os
+import re
 import sys
 import subprocess
 import shutil
@@ -49,7 +50,6 @@ CURRENT_SESSION_ID = None
 BROWSER_CONTEXT = {"url": "", "content": "", "title": ""}
 
 # Pre-compile regex patterns for greeting detection (performance optimization)
-import re
 GREETING_PATTERNS = [
     re.compile(pattern) for pattern in [
         r'\bhello\b', r'\bhi\b', r'\bhey\b', r'\bgood morning\b', r'\bgood evening\b',
@@ -58,6 +58,7 @@ GREETING_PATTERNS = [
         r'\bwhat can you do\b', r'\bhelp me\b'
     ]
 ]
+
 
 
 def get_current_session():

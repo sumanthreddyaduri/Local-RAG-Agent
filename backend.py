@@ -486,10 +486,6 @@ def clear_index() -> Tuple[bool, str]:
         return False, f"Error clearing index: {str(e)}"
 
 
-# Cache for indexed files list (invalidated on index changes)
-_indexed_files_cache = None
-_indexed_files_cache_time = 0
-
 def get_indexed_files() -> List[str]:
     """Get list of files that have been indexed (with caching)."""
     global _indexed_files_cache, _indexed_files_cache_time
