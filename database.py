@@ -70,7 +70,10 @@ def init_db():
         # Indexes for performance
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_messages_created ON chat_messages(created_at)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_messages_role ON chat_messages(role)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_sessions_updated ON chat_sessions(updated_at)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_sessions_pinned ON chat_sessions(is_pinned, updated_at)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_prompt_created ON prompt_library(created_at)')
         
         # ---------------------------------------------------------
         # MIGRATION: Add is_pinned to chat_sessions if not exists

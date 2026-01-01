@@ -37,7 +37,6 @@ from tools import TOOL_REGISTRY, TOOL_DEFINITIONS
 from security import analyze_tool_call, DESTRUCTIVE_ACTIONS, is_safe_path
 
 app = Flask(__name__)
-# ... (lines 37-43 preserved) ...
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploaded_files")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -48,6 +47,17 @@ CURRENT_SESSION_ID = None
 # Shared memory for browser content (Chrome Extension sync)
 # ideally this should be user-specific, but keeping simple for now
 BROWSER_CONTEXT = {"url": "", "content": "", "title": ""}
+
+# Pre-compile regex patterns for greeting detection (performance optimization)
+import re
+GREETING_PATTERNS = [
+    re.compile(pattern) for pattern in [
+        r'\bhello\b', r'\bhi\b', r'\bhey\b', r'\bgood morning\b', r'\bgood evening\b',
+        r'\bgood afternoon\b', r'\bhow are you\b', r'\bwhats up\b', r'\bthanks\b',
+        r'\bthank you\b', r'\bbye\b', r'\bgoodbye\b', r'\bwho are you\b',
+        r'\bwhat can you do\b', r'\bhelp me\b'
+    ]
+]
 
 
 def get_current_session():
@@ -556,16 +566,9 @@ USER QUERY:
 {query}"""
         
         # Intent detection: Check if query needs document context
-        # Intent detection: Check if query needs document context
-        import re
-        greeting_patterns = [r'\bhello\b', r'\bhi\b', r'\bhey\b', r'\bgood morning\b', r'\bgood evening\b', 
-                            r'\bgood afternoon\b', r'\bhow are you\b', r'\bwhats up\b', r'\bthanks\b', 
-                            r'\bthank you\b', r'\bbye\b', r'\bgoodbye\b', r'\bwho are you\b', 
-                            r'\bwhat can you do\b', r'\bhelp me\b']
-        
         query_lower = query.lower().strip()
-        # Use regex to match whole words/phrases
-        is_greeting = any(re.search(pattern, query_lower) for pattern in greeting_patterns)
+        # Use pre-compiled regex patterns for efficiency
+        is_greeting = any(pattern.search(query_lower) for pattern in GREETING_PATTERNS)
         is_greeting_or_meta = is_greeting and len(query_lower) < 50
         
         # Document-specific keywords - triggers RAG only when user explicitly mentions documents
