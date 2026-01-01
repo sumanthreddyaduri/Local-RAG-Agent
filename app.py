@@ -27,9 +27,8 @@ from models_manager import list_models, delete_model, pull_model_stream
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from PIL import Image
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
+from langchain_ollama import ChatOllama
 from PIL import Image
 import pytesseract
 
