@@ -95,30 +95,64 @@ def validate_config(config: Dict[str, Any]) -> tuple[bool, list[str]]:
     """Validate configuration values."""
     errors = []
     
+    # --- Type Coercion & Validation ---
+    
+    # helper to safely convert
+    def safe_int(val, default):
+        try: return int(val)
+        except (ValueError, TypeError): return default
+
+    def safe_float(val, default):
+        try: return float(val)
+        except (ValueError, TypeError): return default
+
+    # 1. Coerce types if possible (modify config in place for cleanliness)
+    if 'chunk_size' in config:
+        config['chunk_size'] = safe_int(config['chunk_size'], DEFAULT_CONFIG['chunk_size'])
+    if 'chunk_overlap' in config:
+        config['chunk_overlap'] = safe_int(config['chunk_overlap'], DEFAULT_CONFIG['chunk_overlap'])
+    if 'retrieval_k' in config:
+        config['retrieval_k'] = safe_int(config['retrieval_k'], DEFAULT_CONFIG['retrieval_k'])
+    if 'hybrid_alpha' in config:
+        config['hybrid_alpha'] = safe_float(config['hybrid_alpha'], DEFAULT_CONFIG['hybrid_alpha'])
+    if 'max_history_context' in config:
+        config['max_history_context'] = safe_int(config['max_history_context'], DEFAULT_CONFIG['max_history_context'])
+    
+    # 2. logical/Boundary Checks
+    
     # Validate chunk_size
-    if not isinstance(config.get('chunk_size'), int) or config['chunk_size'] < 100:
-        errors.append("chunk_size must be an integer >= 100")
+    if config['chunk_size'] < 100:
+        errors.append("chunk_size must be >= 100")
     
     # Validate chunk_overlap
-    if not isinstance(config.get('chunk_overlap'), int) or config['chunk_overlap'] < 0:
-        errors.append("chunk_overlap must be a non-negative integer")
+    if config['chunk_overlap'] < 0:
+        errors.append("chunk_overlap must be non-negative")
     
-    if config.get('chunk_overlap', 0) >= config.get('chunk_size', 1000):
+    if config['chunk_overlap'] >= config['chunk_size']:
         errors.append("chunk_overlap must be less than chunk_size")
     
     # Validate retrieval_k
-    if not isinstance(config.get('retrieval_k'), int) or config['retrieval_k'] < 1:
+    if config['retrieval_k'] < 1:
         errors.append("retrieval_k must be a positive integer")
     
     # Validate hybrid_alpha
-    alpha = config.get('hybrid_alpha', 0.5)
-    if not isinstance(alpha, (int, float)) or alpha < 0 or alpha > 1:
+    if not (0 <= config['hybrid_alpha'] <= 1):
         errors.append("hybrid_alpha must be between 0 and 1")
     
     # Validate max_history_context
-    if not isinstance(config.get('max_history_context'), int) or config['max_history_context'] < 0:
-        errors.append("max_history_context must be a non-negative integer")
-    
+    if config['max_history_context'] < 0:
+        errors.append("max_history_context must be non-negative")
+
+    # Validate Mode
+    valid_modes = ["cli", "browser"]
+    if config.get("mode") not in valid_modes:
+        errors.append(f"mode must be one of {valid_modes}")
+
+    # Validate Ollama Host (Basic URL check)
+    host = config.get("ollama_host", "")
+    if not host.startswith("http"):
+        errors.append("ollama_host must start with http:// or https://")
+
     return len(errors) == 0, errors
 
 

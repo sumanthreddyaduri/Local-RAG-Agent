@@ -579,7 +579,7 @@ USER QUERY:
         # ==========================================
         
         # Models that act as pure chat/RAG only (no agentic tools)
-        NON_TOOL_MODELS = ["gemma2:2b", "moondream", "llama3.2:1b"]
+        NON_TOOL_MODELS = ["gemma2:2b", "moondream", "llama3.2:1b", "qwen2.5:0.5b", "gemma3:270m"]
 
         # 1. Prepare Tools
         # Skip tool binding for:
@@ -592,8 +592,7 @@ USER QUERY:
         # 2. Define the System Prompt
         if is_greeting_or_meta:
              system_prompt = """You are a friendly AI assistant called Local RAG Agent.
-Respond directly to greetings and general questions warmly.
-Do not use tools for simple greetings."""
+Respond directly to greetings and general questions warmly."""
              if vision_context:
                  system_prompt += vision_context
         else:
@@ -1418,6 +1417,17 @@ def global_search():
     })
 
 
+@app.route("/api/graph", methods=["GET"])
+def get_graph_data():
+    """Get knowledge graph data."""
+    try:
+        from backend import get_knowledge_graph
+        graph = get_knowledge_graph()
+        return jsonify(graph)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     # Initialize the database
     from database import init_db
@@ -1431,4 +1441,14 @@ if __name__ == "__main__":
     print(f"{'='*50}\n")
     
     # Security: Bind to localhost only to prevent network exposure
-    app.run(host='127.0.0.1', port=8501, debug=True)
+    debug_mode = "--debug" in sys.argv
+    if debug_mode:
+        print(f"\n{'='*50}")
+        print("Running in DEBUG Mode (Auto-Reload Enabled)")
+        print(f"{'='*50}\n")
+    else:
+        print(f"\n{'='*50}")
+        print("Running in PRODUCTION Mode (Debugger Disabled)")
+        print(f"{'='*50}\n")
+        
+    app.run(host='127.0.0.1', port=8501, debug=debug_mode)

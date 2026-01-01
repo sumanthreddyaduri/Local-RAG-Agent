@@ -8,7 +8,7 @@
   "mode": "browser",
   "chunk_size": 1000,
   "chunk_overlap": 200,
-  "retrieval_k": 3,
+  "retrieval_k": 7,
   "use_hybrid_search": true,
   "hybrid_alpha": 0.5,
   "use_reranking": false,

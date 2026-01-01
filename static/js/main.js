@@ -67,17 +67,26 @@ async function updateSetting(key, value) {
         });
         const data = await response.json();
         if (data.status === 'success') {
-            console.log(`Setting ${key} updated`);
+            showToast(`Setting '${key}' updated`, 'success');
         } else {
-            console.error('Failed to update setting:', data.error);
+            showToast('❌ Update failed: ' + (data.error || 'Unknown'), 'error');
+            console.error('Failed to update setting:', data);
         }
     } catch (error) {
+        showToast('❌ Error updating setting', 'error');
         console.error('Error updating setting:', error);
     }
 }
 
 async function saveAllSettings() {
-    // Collect all settings from form inputs
+    const saveBtn = document.querySelector('button[onclick="saveAllSettings()"]');
+    const originalText = saveBtn ? saveBtn.innerText : 'Save Settings';
+    if (saveBtn) {
+        saveBtn.innerText = 'Saving...';
+        saveBtn.disabled = true;
+    }
+
+    // Collect all settings from form inputs with EXPLICIT type conversion
     const settings = {
         embed_model: document.getElementById('embed-model')?.value,
         chunk_size: parseInt(document.getElementById('chunk-size')?.value) || 500,
@@ -87,7 +96,8 @@ async function saveAllSettings() {
         hybrid_alpha: parseFloat(document.getElementById('hybrid-alpha')?.value) || 0.5,
         max_history_context: parseInt(document.getElementById('max-history')?.value) || 10,
         show_sources: document.getElementById('show-sources')?.checked || false,
-        enable_tts: document.getElementById('tts-toggle')?.checked || false
+        enable_tts: document.getElementById('tts-toggle')?.checked || false,
+        ollama_host: document.getElementById('ollama-host')?.value || "http://localhost:11434"
     };
 
     try {
@@ -97,14 +107,24 @@ async function saveAllSettings() {
             body: JSON.stringify(settings)
         });
         const data = await response.json();
+
         if (data.status === 'success') {
-            alert('✅ All settings saved successfully!');
+            showToast('✅ Settings saved successfully!', 'success');
+            // Optional: Update UI with sanitized values from server
+            if (data.config) {
+                // e.g. update fields if backend coerced values
+            }
         } else {
-            alert('❌ Failed to save settings: ' + (data.error || 'Unknown error'));
+            showToast('❌ Failed to save: ' + (data.details ? data.details.join(', ') : (data.error || 'Unknown error')), 'error');
         }
     } catch (error) {
         console.error('Error saving settings:', error);
-        alert('❌ Error saving settings: ' + error.message);
+        showToast('❌ Network error saving settings', 'error');
+    } finally {
+        if (saveBtn) {
+            saveBtn.innerText = originalText;
+            saveBtn.disabled = false;
+        }
     }
 }
 
@@ -393,7 +413,7 @@ async function deleteFile(filename) {
             loadFiles(); // Reload the document list
             loadStats(); // Reload stats
             showToast('File deleted', 'success');
-            
+
             // Ensure menu closes
             const menu = document.getElementById('context-menu');
             if (menu) {
@@ -476,14 +496,16 @@ var showView = function (viewId) {
     if (viewId === 'controls') targetId = 'control-panel';
     if (viewId === 'dashboard') targetId = 'dashboard-view';
     if (viewId === 'files') targetId = 'files-view';
-    if (viewId === 'chat') targetId = 'chat-view';
-    if (viewId === 'settings') targetId = 'settings-view';
+    if (viewId === 'graph') {
+        targetId = 'graph-view';
+        loadKnowledgeGraph();
+    }
 
     const target = document.getElementById(targetId);
     if (target) target.classList.remove('hidden');
 
     // Update Nav Buttons
-    document.querySelectorAll('.rail-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelectorAll('.rail-btn, .nav-btn').forEach(btn => btn.classList.remove('active'));
     const activeBtn = document.getElementById(`nav-btn-${viewId}`);
     if (activeBtn) activeBtn.classList.add('active');
 
@@ -494,6 +516,147 @@ var showView = function (viewId) {
         scrollToBottom();
     }
 };
+
+
+// ============== KNOWLEDGE GRAPH ==============
+let graphSimulation = null;
+
+async function loadKnowledgeGraph() {
+    const container = document.getElementById('graph-container');
+    const loading = document.getElementById('graph-loading');
+    
+    // Check if D3 is loaded
+    if (typeof d3 === 'undefined') {
+        container.innerHTML = '<div style="color:white;text-align:center;padding:50px;">D3.js not loaded</div>';
+        return;
+    }
+    
+    // Clear previous
+    container.innerHTML = '';
+    loading.style.display = 'block';
+
+    try {
+        const response = await fetch('/api/graph');
+        const data = await response.json();
+        loading.style.display = 'none';
+
+        if (!data.nodes || data.nodes.length === 0) {
+            container.innerHTML = '<div style="color:#666;text-align:center;padding:50px;">Graph Empty. Index more files.</div>';
+            return;
+        }
+
+        const width = container.clientWidth;
+        const height = container.clientHeight;
+
+        // Color scale
+        const color = d3.scaleOrdinal()
+            .domain(['document', 'term'])
+            .range(['#4facfe', '#ff6b6b']);
+
+        // Simulation
+        const simulation = d3.forceSimulation(data.nodes)
+            .force("link", d3.forceLink(data.links).id(d => d.id).distance(100))
+            .force("charge", d3.forceManyBody().strength(-300))
+            .force("center", d3.forceCenter(width / 2, height / 2))
+            .force("collide", d3.forceCollide().radius(d => d.radius + 5));
+
+        graphSimulation = simulation;
+
+        // SVG
+        const svg = d3.select("#graph-container").append("svg")
+            .attr("width", width)
+            .attr("height", height)
+            .call(d3.zoom().on("zoom", (event) => {
+                g.attr("transform", event.transform);
+            }))
+            .append("g");
+
+        const g = svg.append("g");
+
+        // Links
+        const link = g.append("g")
+            .attr("stroke", "#999")
+            .attr("stroke-opacity", 0.6)
+            .selectAll("line")
+            .data(data.links)
+            .join("line")
+            .attr("stroke-width", d => Math.sqrt(d.value || 1));
+
+        // Nodes
+        const node = g.append("g")
+            .attr("stroke", "#fff")
+            .attr("stroke-width", 1.5)
+            .selectAll("circle")
+            .data(data.nodes)
+            .join("circle")
+            .attr("r", d => d.type === 'document' ? 12 : 6)
+            .attr("fill", d => color(d.type))
+            .call(drag(simulation));
+
+        // Labels
+        const label = g.append("g")
+            .attr("class", "labels")
+            .selectAll("text")
+            .data(data.nodes)
+            .join("text")
+            .attr("dy", d => d.type === 'document' ? -15 : 10)
+            .attr("dx", d => d.type === 'document' ? 0 : 8)
+            .text(d => d.label)
+            .attr("fill", "#ddd")
+            .attr("font-size", d => d.type === 'document' ? "12px" : "10px")
+            .style("pointer-events", "none")
+            .style("text-anchor", "middle");
+
+        node.append("title")
+            .text(d => d.label);
+
+        // Tick
+        simulation.on("tick", () => {
+            link
+                .attr("x1", d => d.source.x)
+                .attr("y1", d => d.source.y)
+                .attr("x2", d => d.target.x)
+                .attr("y2", d => d.target.y);
+
+            node
+                .attr("cx", d => d.x)
+                .attr("cy", d => d.y);
+                
+            label
+                .attr("x", d => d.x)
+                .attr("y", d => d.y);
+        });
+
+        // Drag helpers
+        function drag(simulation) {
+            function dragstarted(event) {
+                if (!event.active) simulation.alphaTarget(0.3).restart();
+                event.subject.fx = event.subject.x;
+                event.subject.fy = event.subject.y;
+            }
+
+            function dragged(event) {
+                event.subject.fx = event.x;
+                event.subject.fy = event.y;
+            }
+
+            function dragended(event) {
+                if (!event.active) simulation.alphaTarget(0);
+                event.subject.fx = null;
+                event.subject.fy = null;
+            }
+
+            return d3.drag()
+                .on("start", dragstarted)
+                .on("drag", dragged)
+                .on("end", dragended);
+        }
+
+    } catch (error) {
+        console.error("Graph Error:", error);
+        container.innerHTML = `<div style="color:red;padding:20px;">Error loading graph: ${error.message}</div>`;
+    }
+}
 
 // ============== HELPERS ==============
 function getFileIcon(filename) {
@@ -797,21 +960,28 @@ window.addEventListener('click', (e) => {
 });
 
 // Session Context Menu
-function showSessionContextMenu(event, sessionId, sessionName) {
+function showSessionContextMenu(event, sessionId, sessionName, isPinned) {
     event.preventDefault();
     event.stopPropagation();
 
     const menu = document.getElementById('context-menu');
+    const pinText = isPinned ? 'Unpin' : 'Pin';
+    // Use simple text markers instead of emojis to avoid encoding issues
+    const pinIcon = isPinned ? '<span style="color:var(--accent-color)">[x]</span>' : '<span>[ ]</span>';
+
     menu.innerHTML = `
+        <div class="context-menu-item" onclick="toggleSessionPin(${sessionId}, ${isPinned || 0}); document.getElementById('context-menu').classList.remove('visible');">
+            ${pinIcon} ${pinText} Session
+        </div>
         <div class="context-menu-item" onclick="exportSession(${sessionId}, '${sessionName}', 'txt')">
-            📄 Export as TXT
+            [TXT] Export as TXT
         </div>
         <div class="context-menu-item" onclick="exportSession(${sessionId}, '${sessionName}', 'md')">
-            📝 Export as Markdown
+            [MD] Export as Markdown
         </div>
         <div class="context-menu-divider"></div>
         <div class="context-menu-item danger" onclick="deleteSession(${sessionId}, event)">
-            🗑️ Delete
+            [Del] Delete
         </div>
     `;
 
@@ -1061,6 +1231,29 @@ async function executeBulkDelete() {
 }
 
 
+async function toggleSessionPin(sessionId, currentStatus, event) {
+    if (event) event.stopPropagation();
+
+    try {
+        const response = await fetch(`/api/sessions/${sessionId}/pin`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ is_pinned: !currentStatus })
+        });
+        const data = await response.json();
+        if (data.success) {
+            loadSessions(); // Reload list
+        } else {
+            console.error('Failed to toggle pin');
+            showToast('Failed to toggle pin', 'error');
+        }
+    } catch (e) {
+        console.error('Error toggling pin:', e);
+        showToast('Error toggling pin', 'error');
+    }
+}
+
+
 async function loadSessions() {
     try {
         const response = await fetch('/api/sessions');
@@ -1090,8 +1283,18 @@ async function loadSessions() {
                     </div>
                 `;
             } else {
+                const isPinned = session.is_pinned;
+                const pinColor = isPinned ? '#f1c40f' : 'var(--text-muted)';
+                const pinTitle = isPinned ? 'Unpin Session' : 'Pin Session';
+
                 actionHtml = `
-                    <button class="delete-session-btn" onclick="deleteSession(${session.id}, event)" title="Delete Session">
+                    <button class="action-btn" onclick="toggleSessionPin(${session.id}, ${isPinned || 0}, event)" title="${pinTitle}" style="background:none; border:none; cursor:pointer; padding:2px; margin-right:4px; opacity: ${isPinned ? 1 : 0.5}; transition: opacity 0.2s;">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="${isPinned ? pinColor : 'none'}" stroke="${pinColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="12" y1="17" x2="12" y2="22"></line>
+                            <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17z"></path>
+                        </svg>
+                    </button>
+                    <button class="delete-session-btn" onclick="deleteSession(${session.id}, event)" title="Delete Session" style="opacity: 0.5;">
                         <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#e74c3c">
                             <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM8 9h8v10H8V9zm7.5-5l-1-1h-5l-1 1H5v2h14V4h-3.5z"/>
                             <path d="M9 12h2v5H9zm4 0h2v5h-2z" fill="white"/>
@@ -1103,7 +1306,7 @@ async function loadSessions() {
             return `
             <div class="history-item ${session.id === currentSessionId ? 'active' : ''}" 
                  onclick="switchSession(${session.id})"
-                 oncontextmenu="showSessionContextMenu(event, ${session.id}, '${session.name.replace(/'/g, "\\'")}')"
+                 oncontextmenu="showSessionContextMenu(event, ${session.id}, '${session.name.replace(/'/g, "\\'")}', ${session.is_pinned || 0})"
                  title="${session.name}" style="display: flex; align-items: center;">
                 ${selectionHtml}
                 <span class="history-name" style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${session.name}</span>
@@ -1564,6 +1767,15 @@ function initSidebarResize() {
     });
 }
 
+// ============== KNOWLEDGE GRAPH PLACEHOLDER ==============
+function initGraphPlaceholder() {
+    // Placeholder for future knowledge graph visualization
+    const graphContainer = document.getElementById('knowledge-graph');
+    if (graphContainer) {
+        graphContainer.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#888;font-size:0.9em;">Knowledge Graph visualization coming soon</div>';
+    }
+}
+
 // ============== INITIALIZATION ==============
 function initApp(configMode, sessionId) {
     // Set globals from template
@@ -1625,6 +1837,27 @@ function initApp(configMode, sessionId) {
             e.preventDefault();
             e.stopPropagation();
         }, false);
+    });
+
+    // Global click listener to close context menu
+    document.addEventListener('click', function (e) {
+        const menu = document.getElementById('context-menu');
+        if (menu && menu.classList.contains('visible') && !menu.contains(e.target)) {
+            menu.classList.remove('visible');
+            menu.style.display = 'none';
+        }
+    });
+
+    // Global right-click listener to close context menu if clicking elsewhere
+    document.addEventListener('contextmenu', function (e) {
+        const menu = document.getElementById('context-menu');
+        if (menu && menu.classList.contains('visible') && !menu.contains(e.target)) {
+            // If clicking on a history item, let showSessionContextMenu handle it (don't hide immediately)
+            if (!e.target.closest('.history-item')) {
+                menu.classList.remove('visible');
+                menu.style.display = 'none';
+            }
+        }
     });
 }
 
@@ -2040,3 +2273,19 @@ async function handleActionDecision(actionId, cardId, decision) {
 //         btn.addEventListener('click', handleBulkDeleteClick);
 //     }
 // });
+
+// ============== EXPORT GLOBALS ==============
+// Export functions that need to be callable from index.html
+window.initApp = initApp;
+window.loadSessions = loadSessions;
+window.checkHealth = checkHealth;
+window.newChat = newChat;
+window.sendMessage = sendMessage;
+window.showView = showView;
+window.toggleSessionPin = toggleSessionPin;
+window.deleteSession = deleteSession;
+window.switchSession = switchSession;
+window.showSessionContextMenu = showSessionContextMenu;
+window.showToast = showToast;
+window.loadStats = loadStats;
+window.loadFiles = loadFiles;

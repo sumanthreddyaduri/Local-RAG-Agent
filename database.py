@@ -119,11 +119,11 @@ def get_session(session_id):
 
 
 def get_all_sessions(limit=50):
-    """Get all sessions, ordered by most recent."""
+    """Get all sessions, ordered by pinned status then most recent."""
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            'SELECT * FROM chat_sessions ORDER BY updated_at DESC LIMIT ?',
+            'SELECT * FROM chat_sessions ORDER BY is_pinned DESC, updated_at DESC LIMIT ?',
             (limit,)
         )
         return [dict(row) for row in cursor.fetchall()]

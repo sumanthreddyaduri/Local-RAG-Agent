@@ -56,10 +56,16 @@ def delete_document(filename):
     
     try:
         os.remove(filepath)
-        # TODO: Refactor backend to allow removing single document from FAISS
-        # For now, we might have to re-index everything or just accept the vector persists until clear
-        # This is a limitation of simple FAISS usage.
-        return json.dumps({"status": "success", "message": f"Deleted {filename} from disk. Note: Index update pending."})
+        
+        # Remove from Index
+        from backend import remove_document
+        success, msg = remove_document(filename)
+        
+        if success:
+            return json.dumps({"status": "success", "message": f"Deleted {filename} from disk and index."})
+        else:
+            return json.dumps({"status": "warning", "message": f"Deleted from disk, but index update failed: {msg}"})
+            
     except Exception as e:
         return json.dumps({"status": "error", "message": str(e)})
 

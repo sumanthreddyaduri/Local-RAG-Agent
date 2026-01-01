@@ -5,6 +5,8 @@ Enhanced RAG Backend with Hybrid Search, Configurable Settings, and Better Error
 import os
 import pickle
 import re
+import traceback
+import logging
 from typing import List, Tuple, Optional, Any
 from collections import Counter
 import math
@@ -245,6 +247,51 @@ def clear_index() -> Tuple[bool, str]:
         return False, f"Error clearing index: {str(e)}"
 
 
+def remove_document(filename: str) -> Tuple[bool, str]:
+    """
+    Removes a specific document from FAISS and BM25 indices.
+    """
+    config = load_config()
+    db_path = config.get('db_path', 'faiss_index')
+    bm25_path = get_bm25_path(db_path)
+    
+    try:
+        # 1. Update FAISS
+        db = get_vector_store()
+        if db:
+            # Find IDs to delete
+            ids_to_delete = []
+            for doc_id, doc in db.docstore._dict.items():
+                if doc.metadata.get('source') == filename:
+                    ids_to_delete.append(doc_id)
+            
+            if ids_to_delete:
+                db.delete(ids_to_delete)
+                db.save_local(db_path)
+        
+        # 2. Update BM25
+        if os.path.exists(bm25_path):
+            bm25_index = BM25Index.load(bm25_path)
+            if bm25_index:
+                # Filter out documents with matching source
+                # Note: This checks doc.metadata. Using page_content prefix might be needed if metadata lost, 
+                # but our ingest preserves metadata.
+                initial_count = len(bm25_index.documents)
+                bm25_index.documents = [d for d in bm25_index.documents if d.metadata.get('source') != filename]
+                
+                if len(bm25_index.documents) < initial_count:
+                    # Re-fit to update stats
+                    bm25_index.fit(bm25_index.documents)
+                    bm25_index.save(bm25_path)
+
+        # Clear cache
+        clear_rag_cache()
+        return True, f"Successfully removed {filename} from index."
+        
+    except Exception as e:
+        return False, f"Error removing document: {str(e)}"
+
+
 
 class BM25Index:
     """
@@ -348,7 +395,7 @@ class BM25Index:
             index.avg_doc_length = data['avg_doc_length']
             index.doc_freqs = data['doc_freqs']
             index.idf = data['idf']
-            index.doc_term_freqs = data['doc_term_freqs']
+            index.doc_term_freqs = data.get('doc_term_freqs', [])
             return index
         except Exception as e:
             print(f"Error loading BM25 index: {e}")
@@ -580,11 +627,11 @@ def get_vector_store() -> Optional[FAISS]:
         
     try:
         if _CACHED_DB is not None:
-             print("→ Configuration changed, reloading vector store...")
+             print("> Configuration changed, reloading vector store...")
              # Important: Invalidate derived objects too
              _CACHED_RETRIEVER = None
         else:
-             print("→ Loading FAISS index from disk (cache miss)...")
+             print("> Loading FAISS index from disk (cache miss)...")
              
         embeddings = OllamaEmbeddings(model=embed_model, base_url=ollama_host)
         _CACHED_DB = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
@@ -725,3 +772,81 @@ def get_index_stats() -> dict:
         print(f"Error getting index stats: {e}")
     
     return stats
+
+
+def get_knowledge_graph(max_docs: int = 50, top_terms_per_doc: int = 5) -> dict:
+    """
+    Generates a knowledge graph structure (nodes, links) from the BM25 index.
+    Nodes: Documents and High-IDF Terms.
+    Links: Document <-> Term.
+    """
+    try:
+        config = load_config()
+        db_path = config.get('db_path', 'faiss_index')
+        bm25_path = get_bm25_path(db_path)
+        
+        graph = {"nodes": [], "links": []}
+        
+        if not os.path.exists(bm25_path):
+            return graph
+
+        bm25 = BM25Index.load(bm25_path)
+        if not bm25 or not bm25.documents:
+            return graph
+            
+        docs_to_process = bm25.documents[:max_docs]
+        term_nodes = set()
+        
+        for i in range(min(len(bm25.documents), max_docs)):
+            doc = bm25.documents[i]
+            doc_name = doc.metadata.get('source', f"Doc {i}")
+            doc_name = os.path.basename(doc_name)
+            doc_id = f"doc_{i}"
+            
+            graph["nodes"].append({
+                "id": doc_id,
+                "label": doc_name,
+                "type": "document",
+                "group": 1,
+                "radius": 12 
+            })
+            
+            # Check safely for doc_term_freqs
+            if not hasattr(bm25, 'doc_term_freqs') or i >= len(bm25.doc_term_freqs):
+                continue
+
+            term_freqs = bm25.doc_term_freqs[i]
+            
+            scored_terms = []
+            for term, count in term_freqs.items():
+                if term in bm25.idf:
+                    score = count * bm25.idf[term]
+                    if bm25.idf[term] > 0.5: 
+                        scored_terms.append((term, score))
+            
+            scored_terms.sort(key=lambda x: x[1], reverse=True)
+            top_terms = scored_terms[:top_terms_per_doc]
+            
+            for term, score in top_terms:
+                term_id = f"term_{term}"
+                if term not in term_nodes:
+                    graph["nodes"].append({
+                        "id": term_id,
+                        "label": term,
+                        "type": "term",
+                        "group": 2,
+                        "radius": 6
+                    })
+                    term_nodes.add(term)
+                
+                graph["links"].append({
+                    "source": doc_id,
+                    "target": term_id,
+                    "value": score
+                })
+        return graph
+
+    except Exception as e:
+        print(f"Error generating graph: {e}")
+        traceback.print_exc()
+        return {"nodes": [], "links": [], "error": str(e)}
