@@ -53,7 +53,7 @@ BROWSER_CONTEXT = {"url": "", "content": "", "title": ""}
 GREETING_PATTERNS = [
     re.compile(pattern) for pattern in [
         r'\bhello\b', r'\bhi\b', r'\bhey\b', r'\bgood morning\b', r'\bgood evening\b',
-        r'\bgood afternoon\b', r'\bhow are you\b', r'\bwhats up\b', r'\bthanks\b',
+        r'\bgood afternoon\b', r'\bhow are you\b', r"\bwhat'?s up\b", r'\bthanks\b',
         r'\bthank you\b', r'\bbye\b', r'\bgoodbye\b', r'\bwho are you\b',
         r'\bwhat can you do\b', r'\bhelp me\b'
     ]

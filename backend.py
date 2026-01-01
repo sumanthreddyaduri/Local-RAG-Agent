@@ -487,11 +487,19 @@ def clear_index() -> Tuple[bool, str]:
 
 
 def get_indexed_files() -> List[str]:
-    """Get list of files that have been indexed (with caching)."""
+    """
+    Get list of files that have been indexed (with caching).
+    
+    Cache is automatically invalidated when:
+    - Index is cleared (via clear_rag_cache)
+    - Documents are ingested (via clear_rag_cache)
+    - 5 seconds have elapsed (TTL for responsive updates)
+    """
     global _indexed_files_cache, _indexed_files_cache_time
     import time
     
     # Cache for 5 seconds to reduce repeated docstore iterations
+    # Note: Cache is also invalidated immediately on index modifications
     current_time = time.time()
     if _indexed_files_cache is not None and (current_time - _indexed_files_cache_time) < 5:
         return _indexed_files_cache
