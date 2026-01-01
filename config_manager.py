@@ -1,6 +1,6 @@
 """
 Configuration management for the RAG Agent.
-Provides default settings and validation.
+Provides default settings and validation with caching.
 """
 
 import json
@@ -8,6 +8,10 @@ import os
 from typing import Any, Dict
 
 CONFIG_FILE = "config.json"
+
+# Cache for configuration to reduce file I/O
+_config_cache = None
+_config_mtime = None
 
 DEFAULT_CONFIG = {
     # Model Settings
@@ -45,15 +49,30 @@ DEFAULT_CONFIG = {
 
 
 def load_config() -> Dict[str, Any]:
-    """Load configuration from file, using defaults for missing values."""
+    """Load configuration from file with caching, using defaults for missing values."""
+    global _config_cache, _config_mtime
+    
     config = DEFAULT_CONFIG.copy()
     
     if os.path.exists(CONFIG_FILE):
         try:
+            # Check if file has been modified since last cache
+            current_mtime = os.path.getmtime(CONFIG_FILE)
+            
+            if _config_cache is not None and _config_mtime == current_mtime:
+                # Return cached config
+                return _config_cache.copy()
+            
+            # Load from file
             with open(CONFIG_FILE, "r") as f:
                 saved_config = json.load(f)
                 # Merge saved config with defaults (saved values take precedence)
                 config.update(saved_config)
+            
+            # Update cache
+            _config_cache = config.copy()
+            _config_mtime = current_mtime
+            
         except (json.JSONDecodeError, IOError) as e:
             print(f"Warning: Could not load config file: {e}")
     
@@ -61,10 +80,17 @@ def load_config() -> Dict[str, Any]:
 
 
 def save_config(config: Dict[str, Any]) -> bool:
-    """Save configuration to file."""
+    """Save configuration to file and invalidate cache."""
+    global _config_cache, _config_mtime
+    
     try:
         with open(CONFIG_FILE, "w") as f:
             json.dump(config, f, indent=2)
+        
+        # Invalidate cache to force reload
+        _config_cache = None
+        _config_mtime = None
+        
         return True
     except IOError as e:
         print(f"Error saving config: {e}")
