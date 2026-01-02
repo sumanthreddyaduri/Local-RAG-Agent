@@ -12,8 +12,11 @@ def reingest():
     print(f"Found {len(files)} files to re-ingest: {files}")
     
     if files:
-        success, msg = ingest_files(files)
-        print(msg)
+        result = ingest_files(files)
+        print(f"Processed: {result['processed_count']}, Failed: {result['failed_count']}")
+        for res in result["results"]:
+            status_icon = "✅" if res["status"] == "success" else "❌"
+            print(f"{status_icon} {res['file']}: {res['message']}")
     else:
         print("No files to ingest.")
 

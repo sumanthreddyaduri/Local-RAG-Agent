@@ -4,7 +4,7 @@
 const RAG_API_BASE = "http://127.0.0.1:8501";
 
 // Sync content to RAG agent
-async function syncToRAG(tabId) {
+async function syncToRAG(tabId, sessionId) {
   try {
     // Get the active tab's content
     const [result] = await chrome.scripting.executeScript({
@@ -13,16 +13,16 @@ async function syncToRAG(tabId) {
         // Extract meaningful text content
         const body = document.body;
         const clone = body.cloneNode(true);
-        
+
         // Remove script and style elements
         clone.querySelectorAll('script, style, noscript, iframe').forEach(el => el.remove());
-        
+
         // Get text content
         let text = clone.innerText || clone.textContent;
-        
+
         // Clean up whitespace
         text = text.replace(/\s+/g, ' ').trim();
-        
+
         return {
           url: window.location.href,
           title: document.title,
@@ -34,12 +34,15 @@ async function syncToRAG(tabId) {
     if (result && result.result) {
       const response = await fetch(`${RAG_API_BASE}/api/browser/sync`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Session-ID": sessionId || 'default'
+        },
         body: JSON.stringify(result.result)
       });
-      
+
       if (response.ok) {
-        console.log("RAG Agent: Synced page content successfully");
+        console.log("RAG Agent: Synced page content successfully for session", sessionId);
         return { success: true, url: result.result.url };
       } else {
         console.error("RAG Agent: Sync failed", response.status);
@@ -55,7 +58,7 @@ async function syncToRAG(tabId) {
 // Check if RAG server is running
 async function checkServerHealth() {
   try {
-    const response = await fetch(`${RAG_API_BASE}/health`, { 
+    const response = await fetch(`${RAG_API_BASE}/health`, {
       method: "GET",
       signal: AbortSignal.timeout(3000)
     });
@@ -66,9 +69,11 @@ async function checkServerHealth() {
 }
 
 // Get current browser context from RAG
-async function getBrowserContext() {
+async function getBrowserContext(sessionId) {
   try {
-    const response = await fetch(`${RAG_API_BASE}/api/browser/context`);
+    const response = await fetch(`${RAG_API_BASE}/api/browser/context`, {
+      headers: { "X-Session-ID": sessionId || 'default' }
+    });
     if (response.ok) {
       return await response.json();
     }
@@ -78,9 +83,12 @@ async function getBrowserContext() {
 }
 
 // Clear browser context
-async function clearContext() {
+async function clearContext(sessionId) {
   try {
-    await fetch(`${RAG_API_BASE}/api/browser/clear`, { method: "POST" });
+    await fetch(`${RAG_API_BASE}/api/browser/clear`, {
+      method: "POST",
+      headers: { "X-Session-ID": sessionId || 'default' }
+    });
     return true;
   } catch {
     return false;
@@ -92,7 +100,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "sync") {
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
       if (tabs[0]) {
-        const result = await syncToRAG(tabs[0].id);
+        const result = await syncToRAG(tabs[0].id, message.sessionId);
         sendResponse(result);
       } else {
         sendResponse({ success: false, error: "No active tab" });
@@ -100,27 +108,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true; // Keep channel open for async response
   }
-  
+
   if (message.action === "checkHealth") {
     checkServerHealth().then(healthy => {
       sendResponse({ healthy });
     });
     return true;
   }
-  
+
   if (message.action === "getContext") {
-    getBrowserContext().then(context => {
+    getBrowserContext(message.sessionId).then(context => {
       sendResponse(context);
     });
     return true;
   }
-  
+
   if (message.action === "clearContext") {
-    clearContext().then(success => {
+    clearContext(message.sessionId).then(success => {
       sendResponse({ success });
     });
     return true;
   }
 });
-
 console.log("Local RAG Agent Extension loaded");

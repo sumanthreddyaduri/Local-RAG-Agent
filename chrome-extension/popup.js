@@ -8,6 +8,23 @@ const contextInfo = document.getElementById('contextInfo');
 const syncedUrl = document.getElementById('syncedUrl');
 const messageEl = document.getElementById('message');
 
+const sessionIdInput = document.getElementById('sessionId');
+
+// Load saved session ID
+chrome.storage.local.get(['rag_session_id'], function (result) {
+    if (result.rag_session_id) {
+        sessionIdInput.value = result.rag_session_id;
+    }
+    // Only check health/context after loading ID
+    checkHealth();
+});
+
+// Save session ID on change
+sessionIdInput.addEventListener('change', function () {
+    chrome.storage.local.set({ rag_session_id: sessionIdInput.value });
+    loadContext(); // Reload context for new ID
+});
+
 // Check server health on popup open
 async function checkHealth() {
     chrome.runtime.sendMessage({ action: "checkHealth" }, (response) => {
@@ -27,7 +44,8 @@ async function checkHealth() {
 
 // Load current context
 function loadContext() {
-    chrome.runtime.sendMessage({ action: "getContext" }, (response) => {
+    const sessionId = sessionIdInput.value || 'default';
+    chrome.runtime.sendMessage({ action: "getContext", sessionId: sessionId }, (response) => {
         if (response && response.url) {
             contextInfo.style.display = 'block';
             syncedUrl.textContent = response.url || 'None';
@@ -42,9 +60,11 @@ syncBtn.addEventListener('click', async () => {
     syncBtn.disabled = true;
     syncBtn.textContent = '⏳ Syncing...';
 
-    chrome.runtime.sendMessage({ action: "sync" }, (response) => {
+    const sessionId = sessionIdInput.value || 'default';
+
+    chrome.runtime.sendMessage({ action: "sync", sessionId: sessionId }, (response) => {
         if (response && response.success) {
-            showMessage('Page synced successfully!', 'success');
+            showMessage('Page synced to Session ' + sessionId, 'success');
             syncedUrl.textContent = response.url;
             contextInfo.style.display = 'block';
         } else {
@@ -57,9 +77,10 @@ syncBtn.addEventListener('click', async () => {
 
 // Clear context
 clearBtn.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ action: "clearContext" }, (response) => {
+    const sessionId = sessionIdInput.value || 'default';
+    chrome.runtime.sendMessage({ action: "clearContext", sessionId: sessionId }, (response) => {
         if (response && response.success) {
-            showMessage('Context cleared', 'success');
+            showMessage('Context cleared for Session ' + sessionId, 'success');
             contextInfo.style.display = 'none';
             syncedUrl.textContent = 'None';
         }

@@ -62,10 +62,11 @@
 
 ### Planned Features
 - [ ] **Browser Agent Enhancements**
-  - Improved headless browser capabilities
+  - **Active Agent**: Headless browser (Playwright) for page interactions
+  - **Chat Panel**: In-browser sidebar for direct AI interaction
+  - **Autofill**: Smart form completion and suggestions
   - Web scraping with context preservation
-  - Screenshot annotations
-  - Page archiving
+  - Screenshot annotations and Page archiving
 
 - [ ] **RAG Improvements**
   - Advanced chunking strategies

@@ -11,6 +11,8 @@ from typing import List, Tuple, Optional, Any
 from collections import Counter
 import math
 
+logger = logging.getLogger("RAG_Agent")
+
 from langchain_community.document_loaders import (
     PyPDFLoader, TextLoader, Docx2txtLoader, 
     UnstructuredExcelLoader, UnstructuredPowerPointLoader, CSVLoader
@@ -273,10 +275,15 @@ def load_document_content(file_path: str) -> str:
         return f"(Error reading document: {str(e)[:200]})"
 
 
-def ingest_files(file_paths: List[str]) -> Tuple[bool, str]:
+def ingest_files(file_paths: List[str]) -> dict:
     """
     Reads files, chunks them, and saves to Vector DB and BM25 index.
-    Uses configurable chunk size and overlap.
+    Returns: {
+        "success": bool,
+        "processed_count": int,
+        "failed_count": int, 
+        "results": [{"file": str, "status": "success"|"error", "message": str}]
+    }
     """
     config = load_config()
     db_path = config.get('db_path', 'faiss_index')
@@ -287,26 +294,45 @@ def ingest_files(file_paths: List[str]) -> Tuple[bool, str]:
     bm25_path = get_bm25_path(db_path)
     
     all_docs = []
-    failed_files = []
+    results = []
+    
+    # Track files to index
+    docs_to_index = []
     
     for path in file_paths:
+        filename = os.path.basename(path)
         try:
             loader = get_loader(path)
             docs = loader.load()
+            
+            if not docs:
+                results.append({"file": filename, "status": "error", "message": "No content found"})
+                continue
+
             # Add source metadata and prepend source to content for better retrieval
             for doc in docs:
-                doc.metadata['source'] = os.path.basename(path)
+                doc.metadata['source'] = filename
                 doc.metadata['full_path'] = path
                 # Prepend source to content so keyword search for filename matches the document
-                doc.page_content = f"Source: {os.path.basename(path)}\n\n{doc.page_content}"
-            all_docs.extend(docs)
+                doc.page_content = f"Source: {filename}\n\n{doc.page_content}"
+            
+            docs_to_index.extend(docs)
+            results.append({"file": filename, "status": "success", "message": "Processed successfully"})
+            
         except Exception as e:
-            failed_files.append(f"{os.path.basename(path)}: {str(e)}")
+            results.append({"file": filename, "status": "error", "message": str(e)})
 
-    if not all_docs:
-        if failed_files:
-            return False, f"Failed to load files:\n" + "\n".join(failed_files)
-        return False, "No valid content found in the uploaded files."
+    # Calculate stats
+    successful_files = [r for r in results if r["status"] == "success"]
+    failed_files = [r for r in results if r["status"] == "error"]
+    
+    if not docs_to_index:
+        return {
+            "success": False,
+            "processed_count": 0,
+            "failed_count": len(failed_files),
+            "results": results
+        }
 
     # Split text for RAG using configured chunk size
     splitter = RecursiveCharacterTextSplitter(
@@ -314,7 +340,7 @@ def ingest_files(file_paths: List[str]) -> Tuple[bool, str]:
         chunk_overlap=chunk_overlap,
         separators=["\n\n", "\n", ". ", " ", ""]
     )
-    splits = splitter.split_documents(all_docs)
+    splits = splitter.split_documents(docs_to_index)
 
     try:
         # Save to FAISS
@@ -341,16 +367,25 @@ def ingest_files(file_paths: List[str]) -> Tuple[bool, str]:
         bm25_index.save(bm25_path)
         
     except Exception as e:
-        return False, f"Error during indexing: {str(e)}"
-    
-    success_msg = f"Success! Indexed {len(all_docs)} files."
-    if failed_files:
-        success_msg += f"\nWarning: Some files failed:\n" + "\n".join(failed_files)
+        # If indexing fails, mark all "successful" loads as verification errors
+        # Note: We can't easily rollback the successful file loads logic-wise, 
+        # but the DB write failed so they aren't indexed.
+        return {
+            "success": False,
+            "processed_count": 0,
+            "failed_count": len(file_paths),
+            "results": [{"file": "BATCH_INDEXING", "status": "error", "message": f"Global indexing failed: {str(e)}"}]
+        }
     
     # Clear cache to force reload with new documents
     clear_rag_cache()
     
-    return True, success_msg
+    return {
+        "success": True,
+        "processed_count": len(successful_files),
+        "failed_count": len(failed_files),
+        "results": results
+    }
 
 
 def get_vector_store() -> Optional[FAISS]:
@@ -629,7 +664,49 @@ def get_knowledge_graph(max_docs: int = 50, top_terms_per_doc: int = 5) -> dict:
                     "target": term_id,
                     "value": score
                 })
-        return graph
+        # --- Post-processing: Filter by Degree Centrality ---
+        # 1. Calculate Degree for all nodes
+        node_degrees = Counter()
+        for link in graph["links"]:
+            node_degrees[link["source"]] += 1
+            node_degrees[link["target"]] += 1
+            
+        # 2. Assign centrality to nodes (for UI sizing) and Sort
+        # Keep ALL documents to ensure they appear
+        doc_nodes = [n for n in graph["nodes"] if n["type"] == "document"]
+        term_nodes = [n for n in graph["nodes"] if n["type"] == "term"]
+        
+        # Sort terms by degree (keep most connected keywords)
+        term_nodes.sort(key=lambda n: node_degrees[n["id"]], reverse=True)
+        
+        # Limit total nodes (keep all docs + top terms)
+        max_total_nodes = 200
+        allowed_terms_count = max(0, max_total_nodes - len(doc_nodes))
+        final_term_nodes = term_nodes[:allowed_terms_count]
+        
+        final_nodes = doc_nodes + final_term_nodes
+        final_node_ids = {n["id"] for n in final_nodes}
+        
+        # 3. Filter Links
+        final_links = [
+            l for l in graph["links"] 
+            if l["source"] in final_node_ids and l["target"] in final_node_ids
+        ]
+        
+        # 4. Remove valid nodes that became isolated after link filtering (Optional: or keep them as singletons)
+        # Let's keep docs even if isolated, but remove terms if isolated
+        active_node_ids = set()
+        for link in final_links:
+            active_node_ids.add(link["source"])
+            active_node_ids.add(link["target"])
+            
+        # Refine final nodes: Keep documents OR connected terms
+        final_nodes_cleaned = [
+            n for n in final_nodes 
+            if n["type"] == "document" or n["id"] in active_node_ids
+        ]
+
+        return {"nodes": final_nodes_cleaned, "links": final_links}
 
     except Exception as e:
         print(f"Error generating graph: {e}")

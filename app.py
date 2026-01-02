@@ -33,21 +33,48 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, Tool
 from langchain_ollama import ChatOllama
 from PIL import Image
 import pytesseract
-
+from concurrent.futures import ThreadPoolExecutor
+import uuid
+import time
 from tools import TOOL_REGISTRY, TOOL_DEFINITIONS
 from security import analyze_tool_call, DESTRUCTIVE_ACTIONS, is_safe_path
+from logging_config import setup_logging
+
+# Initialize Logger
+logger = setup_logging()
 
 app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploaded_files")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# Async Background Processing
+executor = ThreadPoolExecutor(max_workers=1)
+TASKS = {} # {task_id: {"status": "processing"|"completed"|"failed", "result": ...}}
+
+def run_ingest_task(task_id, file_paths):
+    """Background task wrapper for ingestion."""
+    TASKS[task_id] = {"status": "processing", "started_at": time.time()}
+    try:
+        from backend import ingest_files 
+        result = ingest_files(file_paths)
+        TASKS[task_id]["status"] = "completed"
+        TASKS[task_id]["result"] = result
+        TASKS[task_id]["completed_at"] = time.time()
+    except Exception as e:
+        TASKS[task_id]["status"] = "failed"
+        TASKS[task_id]["error"] = str(e)
+        TASKS[task_id]["completed_at"] = time.time()
 
 # Current active session (fallback only - refrain from updating globally)
 CURRENT_SESSION_ID = None
 
 # Shared memory for browser content (Chrome Extension sync)
 # ideally this should be user-specific, but keeping simple for now
-BROWSER_CONTEXT = {"url": "", "content": "", "title": ""}
+# Shared memory for browser content (Chrome Extension sync)
+# Now keyed by session_id to prevent leaks
+BROWSER_SESSIONS = {}
 
 # Pre-compile regex patterns for greeting detection (performance optimization)
 GREETING_PATTERNS = [
@@ -92,9 +119,12 @@ def upload():
         paths.append(path)
     
     if paths:
-        success, msg = ingest_files(paths)
-        status = "success" if success else "error"
-        return redirect(url_for("index", message=msg, status=status))
+        # Offload to background thread
+        task_id = str(uuid.uuid4())
+        executor.submit(run_ingest_task, task_id, paths)
+        
+        msg = f"Ingestion started in background. (Task ID: {task_id[:8]})"
+        return redirect(url_for("index", message=msg, status="info"))
     
     return redirect(url_for("index", message="No files selected", status="error"))
 
@@ -312,30 +342,30 @@ def ingest_selected_files():
     if not paths:
         return jsonify({"error": "No valid files found"}), 400
     
-    success, msg = ingest_files(paths)
+    # Offload to background thread
+    task_id = str(uuid.uuid4())
+    executor.submit(run_ingest_task, task_id, paths)
     
-    if success:
-        return jsonify({"status": "success", "message": msg})
-    return jsonify({"error": msg}), 500
+    return jsonify({
+        "status": "processing", 
+        "task_id": task_id,
+        "message": "Ingestion started in background."
+    }), 202
 
 
 @app.route("/api/files/<path:filename>/ingest", methods=["POST"])
 def ingest_single_file(filename):
     """Ingest a single file into the vector store."""
-    # SECURITY: Check path
-    if not is_safe_path(filename):
-        return jsonify({"error": "Invalid filename"}), 400
-
     filepath = os.path.join(UPLOAD_DIR, filename)
-    
     if not os.path.exists(filepath):
         return jsonify({"error": "File not found"}), 404
+        
+    result = ingest_files([filepath])
     
-    success, msg = ingest_files([filepath])
+    if result["success"] and result["processed_count"] > 0:
+        return jsonify(result)
     
-    if success:
-        return jsonify({"status": "success", "message": msg})
-    return jsonify({"error": msg}), 500
+    return jsonify(result), 400
 
 
 @app.route("/api/files/preview/<path:filename>")
@@ -557,9 +587,13 @@ def chat():
         history_text = format_history_for_prompt(session_id, max_history)
         
         # Inject browser context if in browser mode
-        if config.get("mode") == "browser" and BROWSER_CONTEXT.get("content"):
-            browser_content = BROWSER_CONTEXT.get("content", "")[:4000]  # Truncate to avoid overflow
-            browser_url = BROWSER_CONTEXT.get("url", "")
+        # Use str(session_id) to ensure key consistency
+        session_key = str(session_id)
+        browser_context_data = BROWSER_SESSIONS.get(session_key, {})
+        
+        if config.get("mode") == "browser" and browser_context_data.get("content"):
+            browser_content = browser_context_data.get("content", "")[:4000]  # Truncate to avoid overflow
+            browser_url = browser_context_data.get("url", "")
             query = f"""CONTEXT FROM ACTIVE BROWSER TAB ({browser_url}):
 {browser_content}
 
@@ -710,8 +744,10 @@ Conversation History:
                                 "tool": tool_name,
                                 "args": tool_args,
                                 "id": tool_id,
-                                "reason": reason
+                                "reason": reason,
+                                "timestamp": time.time()
                             }
+                            clean_pending_actions() # Clean before adding new
                             PENDING_ACTIONS[session_id] = approval_data
                             yield f"[APPROVAL_REQUIRED] {json.dumps(approval_data)}"
                             return
@@ -793,9 +829,21 @@ Conversation History:
 # Global store for pending actions
 PENDING_ACTIONS = {}
 
+def clean_pending_actions(ttl=300): # 5 minutes TTL
+    """Remove stale pending actions."""
+    current_time = time.time()
+    to_remove = []
+    for sid, data in PENDING_ACTIONS.items():
+        if current_time - data.get("timestamp", 0) > ttl:
+            to_remove.append(sid)
+    
+    for sid in to_remove:
+        del PENDING_ACTIONS[sid]
+
 @app.route("/api/agent/allow", methods=["POST"])
 def allow_tool():
     """Execute a pending tool call after user approval."""
+    clean_pending_actions() # Clean stale actions on access
     data = request.json
     session_id = data.get("session_id")
     action_id = data.get("action_id")
@@ -994,6 +1042,14 @@ def api_delete_model(model_name):
     return jsonify({"error": msg}), 500
 
 # ============== NEW API ENDPOINTS ==============
+@app.route("/api/tasks/<task_id>", methods=["GET"])
+def get_task_status(task_id):
+    """Check status of a background task."""
+    task = TASKS.get(task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+    return jsonify(task)
+
 
 @app.route("/api/health", methods=["GET"])
 def api_health():
@@ -1129,26 +1185,37 @@ def index_stats():
 @app.route("/api/browser/sync", methods=["POST"])
 def sync_browser():
     """Endpoint for Chrome Extension to send active tab data."""
-    global BROWSER_CONTEXT
-    data = request.json or {}
-    BROWSER_CONTEXT["url"] = data.get("url", "")
-    BROWSER_CONTEXT["content"] = data.get("content", "")
-    BROWSER_CONTEXT["title"] = data.get("title", "")
-    return jsonify({"status": "synced", "url": BROWSER_CONTEXT["url"]})
+    try:
+        data = request.json or {}
+        session_id = request.headers.get('X-Session-ID', 'default')
+        logger.debug(f"Browser Sync Request. Session-ID: {session_id}")
+        
+        BROWSER_SESSIONS[session_id] = {
+            "url": data.get("url", ""),
+            "title": data.get("title", ""),
+            "content": data.get("content", ""),
+            "timestamp": time.time()
+        }
+        return jsonify({"status": "synced", "session_id": session_id})
+    except Exception as e:
+        print(f"Error in browser sync: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/browser/context", methods=["GET"])
 def get_browser_context():
     """Get the currently synced browser context."""
-    return jsonify(BROWSER_CONTEXT)
+    session_id = request.headers.get('X-Session-ID', 'default')
+    return jsonify(BROWSER_SESSIONS.get(session_id, {}))
 
 
 @app.route("/api/browser/clear", methods=["POST"])
 def clear_browser_context():
     """Clear the browser context."""
-    global BROWSER_CONTEXT
-    BROWSER_CONTEXT = {"url": "", "content": "", "title": ""}
-    return jsonify({"status": "cleared"})
+    session_id = request.headers.get('X-Session-ID', 'default')
+    if session_id in BROWSER_SESSIONS:
+        del BROWSER_SESSIONS[session_id]
+    return jsonify({"status": "cleared", "session_id": session_id})
 
 
 @app.route("/api/stats", methods=["GET"])
@@ -1438,11 +1505,11 @@ if __name__ == "__main__":
     init_db()
     
     config = load_config()
-    print(f"\n{'='*50}")
-    print("RAG Agent Web Server Starting...")
-    print(f"Model: {config.get('model', 'gemma3:270m')}")
-    print(f"Hybrid Search: {'Enabled' if config.get('use_hybrid_search') else 'Disabled'}")
-    print(f"{'='*50}\n")
+    logger.info(f"{'='*50}")
+    logger.info("RAG Agent Web Server Starting...")
+    logger.info(f"Model: {config.get('model', 'gemma3:270m')}")
+    logger.info(f"Hybrid Search: {'Enabled' if config.get('use_hybrid_search') else 'Disabled'}")
+    logger.info(f"{'='*50}")
     
     # Production run (default)
     app.run(host='127.0.0.1', port=8501, debug=False)
