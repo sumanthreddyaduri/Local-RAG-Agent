@@ -96,11 +96,13 @@ def start():
     
     # 1. Start Flask UI in background (if not already running)
     ui = None
+    ui = None
     if not server_was_running:
-        app_args = [sys.executable, "app.py"]
         if "--debug" in sys.argv:
             print("🔧 Debug Mode Enabled")
-            app_args.append("--debug")
+            app_args = [sys.executable, "debug_server.py"]
+        else:
+            app_args = [sys.executable, "app.py"]
             
         ui = subprocess.Popen(
             app_args,

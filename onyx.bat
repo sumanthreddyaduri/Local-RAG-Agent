@@ -8,11 +8,10 @@ if "%CMD%"=="" set "CMD=start"
 if "%CMD%"=="start" goto :start
 if "%CMD%"=="stop" goto :stop
 if "%CMD%"=="status" goto :status
-if "%CMD%"=="debug" goto :debug
 if "%CMD%"=="setup" goto :setup
 
 echo Unknown command: %CMD%
-echo Usage: .\onyx [start^|stop^|status^|debug^|setup]
+echo Usage: .\onyx [start^|stop^|status^|setup]
 exit /b 1
 
 :start
@@ -20,10 +19,6 @@ echo Starting Onyx v2.0.0...
 python start_app.py %2 %3 %4 %5 %6 %7 %8 %9
 exit /b 0
 
-:debug
-echo Starting Onyx in DEBUG mode...
-python start_app.py --debug %2 %3 %4 %5 %6 %7 %8 %9
-exit /b 0
 
 :stop
 echo Stopping Onyx...

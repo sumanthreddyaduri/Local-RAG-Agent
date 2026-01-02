@@ -1440,15 +1440,5 @@ if __name__ == "__main__":
     print(f"Hybrid Search: {'Enabled' if config.get('use_hybrid_search') else 'Disabled'}")
     print(f"{'='*50}\n")
     
-    # Security: Bind to localhost only to prevent network exposure
-    debug_mode = "--debug" in sys.argv
-    if debug_mode:
-        print(f"\n{'='*50}")
-        print("Running in DEBUG Mode (Auto-Reload Enabled)")
-        print(f"{'='*50}\n")
-    else:
-        print(f"\n{'='*50}")
-        print("Running in PRODUCTION Mode (Debugger Disabled)")
-        print(f"{'='*50}\n")
-        
-    app.run(host='127.0.0.1', port=8501, debug=debug_mode)
+    # Production run (default)
+    app.run(host='127.0.0.1', port=8501, debug=False)
