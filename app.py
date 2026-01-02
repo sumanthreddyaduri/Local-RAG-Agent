@@ -4,6 +4,7 @@ Enhanced Flask Application with Persistent Chat Memory, Health Checks, and Impro
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify, Response, send_from_directory
 import os
+import re
 import sys
 import subprocess
 import shutil
@@ -19,7 +20,8 @@ from database import (
     add_message, get_messages, format_history_for_prompt, 
     delete_session, rename_session, clear_session_messages,
     toggle_pin_session, get_pinned_sessions,
-    create_prompt, get_all_prompts, delete_prompt, search_chat_data
+    create_prompt, get_all_prompts, delete_prompt, search_chat_data,
+    get_total_message_count
 )
 
 from health_check import check_ollama_health, check_model_available, get_system_status
@@ -27,9 +29,8 @@ from models_manager import list_models, delete_model, pull_model_stream
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from PIL import Image
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
+from langchain_ollama import ChatOllama
 from PIL import Image
 import pytesseract
 
@@ -37,7 +38,6 @@ from tools import TOOL_REGISTRY, TOOL_DEFINITIONS
 from security import analyze_tool_call, DESTRUCTIVE_ACTIONS, is_safe_path
 
 app = Flask(__name__)
-# ... (lines 37-43 preserved) ...
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploaded_files")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -48,6 +48,17 @@ CURRENT_SESSION_ID = None
 # Shared memory for browser content (Chrome Extension sync)
 # ideally this should be user-specific, but keeping simple for now
 BROWSER_CONTEXT = {"url": "", "content": "", "title": ""}
+
+# Pre-compile regex patterns for greeting detection (performance optimization)
+GREETING_PATTERNS = [
+    re.compile(pattern) for pattern in [
+        r'\bhello\b', r'\bhi\b', r'\bhey\b', r'\bgood morning\b', r'\bgood evening\b',
+        r'\bgood afternoon\b', r'\bhow are you\b', r"\bwhat'?s up\b", r'\bthanks\b',
+        r'\bthank you\b', r'\bbye\b', r'\bgoodbye\b', r'\bwho are you\b',
+        r'\bwhat can you do\b', r'\bhelp me\b'
+    ]
+]
+
 
 
 def get_current_session():
@@ -556,16 +567,9 @@ USER QUERY:
 {query}"""
         
         # Intent detection: Check if query needs document context
-        # Intent detection: Check if query needs document context
-        import re
-        greeting_patterns = [r'\bhello\b', r'\bhi\b', r'\bhey\b', r'\bgood morning\b', r'\bgood evening\b', 
-                            r'\bgood afternoon\b', r'\bhow are you\b', r'\bwhats up\b', r'\bthanks\b', 
-                            r'\bthank you\b', r'\bbye\b', r'\bgoodbye\b', r'\bwho are you\b', 
-                            r'\bwhat can you do\b', r'\bhelp me\b']
-        
         query_lower = query.lower().strip()
-        # Use regex to match whole words/phrases
-        is_greeting = any(re.search(pattern, query_lower) for pattern in greeting_patterns)
+        # Use pre-compiled regex patterns for efficiency
+        is_greeting = any(pattern.search(query_lower) for pattern in GREETING_PATTERNS)
         is_greeting_or_meta = is_greeting and len(query_lower) < 50
         
         # Document-specific keywords - triggers RAG only when user explicitly mentions documents
@@ -1158,11 +1162,8 @@ def app_stats():
         sessions = get_all_sessions()
         total_sessions = len(sessions)
         
-        # Calculate total messages
-        total_messages = 0
-        for s in sessions:
-            msgs = get_messages(s['id'])
-            total_messages += len(msgs)
+        # Calculate total messages efficiently with single query
+        total_messages = get_total_message_count()
             
         # Get config for model info
         config = load_config()
@@ -1257,6 +1258,9 @@ def list_uploaded_files():
     files = []
     
     if os.path.exists(UPLOAD_DIR):
+        # Get indexed files once at the beginning (cached already, but still avoid repeated calls)
+        indexed_files_set = set(get_indexed_files())
+        
         for filename in os.listdir(UPLOAD_DIR):
             filepath = os.path.join(UPLOAD_DIR, filename)
             if os.path.isfile(filepath):
@@ -1288,7 +1292,7 @@ def list_uploaded_files():
                     "modified": stat.st_mtime,
                     "extension": ext,
                     "type": file_type,
-                    "indexed": filename in get_indexed_files()
+                    "indexed": filename in indexed_files_set
                 })
     
     # Sort by modified time (newest first)
