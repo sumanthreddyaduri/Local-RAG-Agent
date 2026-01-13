@@ -1,6 +1,0 @@
-
-ProcessId CommandLine
---------- -----------
-    10268 python  start_app.py        
-    18688 C:\Python314\python.exe app.py
-

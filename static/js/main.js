@@ -23,7 +23,9 @@ let fileViewMode = 'grid';
 let selectedFiles = new Set();
 let currentContextFile = null;
 let currentMode = 'cli';
+let currentMode = 'cli';
 let currentSessionId = null;
+let lastMessageId = 0; // START: Real-time Sync Track
 
 // ============== STARTER QUERY (Chat Chips) ==============
 function sendStarterQuery(query) {
@@ -39,26 +41,124 @@ function sendStarterQuery(query) {
     }
 }
 
-// ============== THEME ==============
-function toggleTheme() {
-    document.body.classList.toggle('dark-theme');
-    const isDark = document.body.classList.contains('dark-theme');
-    localStorage.setItem('theme', isDark ? 'dark' : 'light');
+// ============== THEME & UI ==============
+function setTheme(mode) {
+    localStorage.setItem('theme', mode);
+
+    const selector = document.getElementById('theme-selector');
+    if (selector && selector.value !== mode) selector.value = mode;
+
+    let isDark = false;
+    if (mode === 'auto') {
+        isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    } else {
+        isDark = mode === 'dark';
+    }
+
+    if (isDark) {
+        document.body.classList.add('dark-theme');
+    } else {
+        document.body.classList.remove('dark-theme');
+    }
     updateThemeIcon(isDark);
 }
 
 function updateThemeIcon(isDark) {
     const icon = document.getElementById('theme-icon');
     if (icon) {
-        // Moon for Dark, Sun for Light (showing CURRENT state)
-        icon.src = isDark
-            ? 'https://img.icons8.com/?id=26031&format=png&size=24'  // Moon
-            : 'https://img.icons8.com/?id=648&format=png&size=24';   // Sun
+        icon.textContent = isDark ? '☀️' : '🌙';
+    }
+}
+
+function toggleTheme() {
+    // Legacy toggle support
+    const current = localStorage.getItem('theme');
+    const newMode = (current === 'dark') ? 'light' : 'dark';
+    setTheme(newMode);
+}
+
+function setAccentColor(color, buttonElement) {
+    // Update CSS custom property for accent color
+    document.documentElement.style.setProperty('--accent-color', color);
+
+    // Save to localStorage
+    localStorage.setItem('accentColor', color);
+
+    // Update active state on buttons
+    const allColorButtons = document.querySelectorAll('.color-dot');
+    allColorButtons.forEach(btn => {
+        btn.classList.remove('active');
+        btn.style.border = '2px solid white';
+        btn.style.boxShadow = 'none';
+    });
+
+    // Set active state on clicked button
+    if (buttonElement) {
+        buttonElement.classList.add('active');
+        buttonElement.style.border = '2px solid white';
+        buttonElement.style.boxShadow = `0 0 0 2px ${color}`;
+    }
+}
+
+function toggleCompactMode(isCompact) {
+    if (isCompact) {
+        document.body.classList.add('compact-mode');
+        localStorage.setItem('compactMode', 'true');
+    } else {
+        document.body.classList.remove('compact-mode');
+        localStorage.setItem('compactMode', 'false');
+    }
+}
+
+function loadClientSettings() {
+    // Theme
+    const savedTheme = localStorage.getItem('theme') || 'light';
+    setTheme(savedTheme);
+
+    // System theme listener
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+        if (localStorage.getItem('theme') === 'auto') {
+            if (e.matches) {
+                document.body.classList.add('dark-theme');
+                updateThemeIcon(true);
+            } else {
+                document.body.classList.remove('dark-theme');
+                updateThemeIcon(false);
+            }
+        }
+    });
+
+    // Compact Mode
+    const savedCompact = localStorage.getItem('compactMode') === 'true';
+    toggleCompactMode(savedCompact);
+    const compactToggle = document.getElementById('compact-mode-toggle');
+    if (compactToggle) compactToggle.checked = savedCompact;
+
+    // Accent Color
+    const savedColor = localStorage.getItem('accentColor');
+    if (savedColor) {
+        document.documentElement.style.setProperty('--accent-color', savedColor);
     }
 }
 
 // ============== SETTINGS MANAGEMENT ==============
 async function updateSetting(key, value) {
+    // Permission Request for Desktop Notifications
+    if (key === 'desktop_notifications' && value === true) {
+        if (!('Notification' in window)) {
+            showToast('❌ Browser does not support notifications', 'error');
+            return;
+        }
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') {
+            showToast('⚠️ Notification permission denied', 'warning');
+            // Revert toggle if denied? Maybe too aggressive.
+        } else {
+            const n = new Notification('Onyx', { body: 'Desktop notifications enabled! 🔔' });
+            setTimeout(() => n.close(), 3000);
+        }
+    }
+
     try {
         const response = await fetch('/api/settings', {
             method: 'POST',
@@ -75,6 +175,59 @@ async function updateSetting(key, value) {
     } catch (error) {
         showToast('❌ Error updating setting', 'error');
         console.error('Error updating setting:', error);
+    }
+}
+
+async function loadSettings() {
+    try {
+        const response = await fetch('/api/settings');
+        const config = await response.json();
+
+        if (config) {
+            const setVal = (id, val) => {
+                const el = document.getElementById(id);
+                if (el && val !== undefined && val !== null) el.value = val;
+            };
+            const setCheck = (id, val) => {
+                const el = document.getElementById(id);
+                if (el) el.checked = !!val;
+            };
+
+            setVal('embed-model', config.embed_model);
+            setVal('chunk-size', config.chunk_size);
+            setVal('chunk-overlap', config.chunk_overlap);
+            setVal('retrieval-k', config.retrieval_k);
+            setCheck('hybrid-search', config.use_hybrid_search);
+            setVal('hybrid-alpha', config.hybrid_alpha);
+            setVal('max-history', config.max_history_context);
+            setCheck('show-sources', config.show_sources);
+            setCheck('tts-toggle', config.enable_tts);
+            setVal('ollama-host', config.ollama_host);
+
+            // Restore Theme from Server Config
+            if (config.theme) {
+                setTheme(config.theme);
+            }
+
+            // Update Mode UI (Merged from modules.js)
+            const mode = config.mode || 'cli';
+            if (typeof currentMode !== 'undefined') currentMode = mode;
+
+            const modeBadge = document.getElementById('current-mode-badge');
+            if (modeBadge) modeBadge.textContent = mode === 'browser' ? 'BROWSER' : 'CLI';
+
+            const modeStatus = document.getElementById('mode-status');
+            if (modeStatus) modeStatus.innerHTML = `Mode: <strong>${mode === 'browser' ? 'Browser Chat' : 'CLI Chat'}</strong>`;
+
+            document.querySelectorAll('.mode-btn').forEach(btn => {
+                btn.classList.remove('active');
+                if (btn.dataset.mode === mode) btn.classList.add('active');
+            });
+
+            console.log('Settings loaded:', config);
+        }
+    } catch (e) {
+        console.error('Failed to load settings:', e);
     }
 }
 
@@ -97,7 +250,9 @@ async function saveAllSettings() {
         max_history_context: parseInt(document.getElementById('max-history')?.value) || 10,
         show_sources: document.getElementById('show-sources')?.checked || false,
         enable_tts: document.getElementById('tts-toggle')?.checked || false,
-        ollama_host: document.getElementById('ollama-host')?.value || "http://localhost:11434"
+        ollama_host: document.getElementById('ollama-host')?.value || "http://localhost:11434",
+        notification_duration: parseInt(document.getElementById('notification-duration')?.value) || 3,
+        theme: document.getElementById('theme-selector')?.value || 'dark'
     };
 
     try {
@@ -268,6 +423,12 @@ async function loadStats() {
             ];
             window.usageChart.update();
         }
+
+        // Update Index Management Stats
+        if (document.getElementById('mgmt-stat-docs')) {
+            document.getElementById('mgmt-stat-docs').innerText = data.total_documents || 0;
+            document.getElementById('mgmt-stat-chunks').innerText = data.total_chunks || 0;
+        }
     } catch (e) {
         console.error('Failed to load stats:', e);
     } finally {
@@ -277,428 +438,282 @@ async function loadStats() {
         });
     }
 }
-
 // ============== FILE MANAGEMENT ==============
-async function loadFiles() {
-    const container = document.getElementById('file-grid');
-    if (!container) return;
-
-    if (container.children.length === 0) {
-        container.innerHTML = Array(3).fill(0).map(() => `
-            <div class="file-card">
-                <div class="file-icon skeleton" style="width: 40px; height: 40px;"></div>
-                <div class="file-info" style="width: 100%">
-                    <div class="file-name skeleton" style="width: 80%; margin-bottom: 5px;"></div>
-                    <div class="file-meta skeleton" style="width: 50%;"></div>
-                </div>
-            </div>
-        `).join('');
-    }
-
-    try {
-        const response = await fetch('/api/documents');
-        const data = await response.json();
-        renderFiles(data.documents || []);
-    } catch (e) {
-        console.error('Failed to load documents:', e);
-        container.innerHTML = '<div class="empty-state"><p>Failed to load documents</p></div>';
-    }
-}
-
-function renderFiles(files) {
-    const container = document.getElementById('file-grid');
-    container.className = fileViewMode === 'grid' ? 'file-grid' : 'file-list';
-
-    const bulkActions = document.getElementById('bulk-actions');
-    if (bulkActions) bulkActions.style.display = 'none';
-
-    const emptyState = document.getElementById('files-empty-state');
-    const fileContainer = document.getElementById('file-container');
-
-    if (files.length === 0) {
-        if (emptyState) emptyState.classList.remove('hidden');
-        if (fileContainer) fileContainer.classList.add('hidden');
-        container.innerHTML = '';
-        return;
-    } else {
-        if (emptyState) emptyState.classList.add('hidden');
-        if (fileContainer) fileContainer.classList.remove('hidden');
-    }
-
-    container.innerHTML = files.map(file => `
-        <div class="file-card" 
-             oncontextmenu="showContextMenu(event, 'indexed', '${file.name}')"
-             ondblclick="showPreview('${file.name}')">
-            
-            <div class="file-icon">${getFileIcon(file.name)}</div>
-            <div class="file-info">
-                <div class="file-name" title="${file.name}">${file.name}</div>
-                <div class="file-meta">${formatFileSize(file.size)} • ${formatDate(file.modified)}</div>
-            </div>
-        </div>
-    `).join('');
-}
-
-// Ensure no old functions leak
-window.renderFiles = renderFiles;
-
-async function uploadFiles(files) {
-    if (!files || files.length === 0) return;
-    const formData = new FormData();
-    for (let i = 0; i < files.length; i++) {
-        formData.append('files', files[i]);
-    }
-    showToast('Uploading files...', 'info');
-    try {
-        const response = await fetch('/api/files/upload', {
-            method: 'POST',
-            body: formData
-        });
-        const data = await response.json();
-        if (data.status === 'success') {
-            showToast(`Uploaded ${data.uploaded.length} files`, 'success');
-            loadFiles();
-            loadStats();
-        } else {
-            showToast('Upload failed: ' + (data.message || 'Unknown error'), 'error');
-        }
-    } catch (e) {
-        showToast('Upload error: ' + e.message, 'error');
-    }
+function handleDragOver(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const dropZone = document.getElementById('drop-zone');
+    if (dropZone) dropZone.classList.add('drag-active');
 }
 
 function handleDrop(event) {
     event.preventDefault();
     event.stopPropagation();
-    document.getElementById('drop-zone').classList.remove('drag-over');
-    const files = event.dataTransfer.files;
-    uploadFiles(files);
+    const dropZone = document.getElementById('drop-zone');
+    if (dropZone) dropZone.classList.remove('drag-active');
+
+    if (event.dataTransfer.files && event.dataTransfer.files.length > 0) {
+        addFilesToStage(event.dataTransfer.files);
+    }
 }
 
 function handleFileSelect(event) {
-    const files = event.target.files;
-    uploadFiles(files);
-    event.target.value = '';
-}
-
-// Selection functions - disabled/dummy
-function toggleFileSelection(filename, event) {
-    if (event) event.stopPropagation();
-}
-
-function deleteSelectedFiles() {
-    // Disabled
-}
-
-function clearSelection() {
-    // Disabled
-}
-
-// Fix: Single Delete
-// Fix: Single Delete
-async function deleteFile(filename) {
-    if (!confirm(`Delete "${filename}"?`)) return;
-
-    showToast('Deleting...', 'info');
-    console.log('Deleting file:', filename); // Debug log
-
-    try {
-        // Use the new /api/documents endpoint which handles index removal + file deletion
-        const response = await fetch(`/api/documents/${encodeURIComponent(filename)}`, {
-            method: 'DELETE'
-        });
-        const data = await response.json();
-
-        if (data.status === 'success') {
-            loadFiles(); // Reload the document list
-            loadStats(); // Reload stats
-            showToast('File deleted', 'success');
-
-            // Ensure menu closes
-            const menu = document.getElementById('context-menu');
-            if (menu) {
-                menu.classList.remove('visible');
-                menu.style.display = 'none';
-            }
-        } else {
-            showToast('Failed to delete: ' + (data.error || 'Unknown error'), 'error');
-        }
-    } catch (e) {
-        showToast('Error deleting file: ' + e.message, 'error');
+    if (event.target.files && event.target.files.length > 0) {
+        addFilesToStage(event.target.files);
     }
 }
 
-// ============== FILE PREVIEW ==============
-async function showPreview(filename) {
-    currentContextFile = filename;
-    const modal = document.getElementById('preview-modal');
-    const content = document.getElementById('preview-content');
-    const title = document.getElementById('preview-filename');
+function addFilesToStage(files) {
+    Array.from(files).forEach(file => {
+        let exists = false;
+        selectedFiles.forEach(f => {
+            if (f.name === file.name) exists = true;
+        });
+        if (!exists) selectedFiles.add(file);
+    });
+    renderStagedFiles();
+}
 
-    title.textContent = filename;
-    content.innerHTML = '<div class="loading">Loading preview...</div>';
+function renderStagedFiles() {
+    const container = document.getElementById('file-preview-container');
+    const uploadBtn = document.getElementById('upload-btn');
+    if (!container) return;
 
-    modal.classList.remove('hidden');
-    modal.classList.add('show');
+    container.innerHTML = '';
 
-    try {
-        const response = await fetch(`/api/files/preview/${encodeURIComponent(filename)}`);
-        const data = await response.json();
+    selectedFiles.forEach(file => {
+        const div = document.createElement('div');
+        div.className = 'staged-file';
+        div.innerHTML = `
+            <span>${file.name} (${formatFileSize(file.size)})</span>
+            <span class="remove-file" onclick="removeStagedFile('${file.name}')">×</span>
+        `;
+        container.appendChild(div);
+    });
 
-        if (data.error) {
-            content.innerHTML = `<div class="preview-error">❌ ${data.error}</div>`;
-        } else if (data.type === 'text') {
-            content.innerHTML = `<pre class="preview-text">${escapeHtml(data.content)}</pre>`;
-        } else if (data.type === 'image') {
-            content.innerHTML = `<div style="text-align:center"><img src="${data.url}" class="preview-image" style="max-width:100%; max-height:60vh;"></div>`;
-        } else {
-            content.innerHTML = `<div class="preview-info"><p>${data.content}</p></div>`;
-        }
-    } catch (e) {
-        content.innerHTML = `<div class="preview-error">❌ Failed to load preview</div>`;
+    if (uploadBtn) {
+        uploadBtn.disabled = selectedFiles.size === 0;
+        uploadBtn.innerText = selectedFiles.size > 0 ? `Upload ${selectedFiles.size} File(s)` : 'Upload';
     }
 }
 
-function closePreviewModal() {
-    const modal = document.getElementById('preview-modal');
-    modal.classList.remove('show');
-    modal.classList.add('hidden');
-    currentContextFile = null;
+function removeStagedFile(name) {
+    selectedFiles.forEach(file => {
+        if (file.name === name) selectedFiles.delete(file);
+    });
+    renderStagedFiles();
 }
 
-async function ingestPreviewFile() {
-    if (!currentContextFile) return;
-    showToast(`Ingesting ${currentContextFile}...`, 'info');
+async function uploadStagedFiles() {
+    if (selectedFiles.size === 0) return;
+
+    const formData = new FormData();
+    selectedFiles.forEach(file => {
+        formData.append('files', file);
+    });
+
+    const btn = document.getElementById('upload-btn');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerText = 'Uploading...';
+    }
+
     try {
-        const response = await fetch(`/api/files/${encodeURIComponent(currentContextFile)}/ingest`, {
-            method: 'POST'
+        const response = await fetch('/upload', {
+            method: 'POST',
+            body: formData
         });
-        const data = await response.json();
-        if (data.status === 'success') {
-            showToast('File ingested successfully', 'success');
+
+        if (response.ok) {
+            showToast('Files uploaded successfully', 'success');
+            selectedFiles.clear();
+            renderStagedFiles();
+            loadFiles();
             loadStats();
-            closePreviewModal();
         } else {
-            showToast('Ingest failed: ' + data.error, 'error');
+            const err = await response.text();
+            showToast('Upload failed', 'error');
+            console.error(err);
         }
-    } catch (e) {
-        showToast('Ingest error: ' + e.message, 'error');
+    } catch (error) {
+        console.error('Upload Error:', error);
+        showToast('Upload error', 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = selectedFiles.size === 0;
+            btn.innerText = 'Upload';
+        }
     }
 }
 
-// ============== VIEW NAVIGATION ==============
-var showView = function (viewId) {
-    localStorage.setItem('lastView', viewId);
-    document.querySelectorAll('.view-section').forEach(el => el.classList.add('hidden'));
-    document.getElementById('input-bar').classList.add('hidden');
+async function loadFiles() {
+    const list = document.getElementById('file-grid');
+    if (!list) return;
 
-    let targetId = viewId + '-view';
-    if (viewId === 'controls') targetId = 'control-panel';
-    if (viewId === 'dashboard') targetId = 'dashboard-view';
-    if (viewId === 'files') targetId = 'files-view';
-    if (viewId === 'graph') {
-        targetId = 'graph-view';
-        loadKnowledgeGraph();
+    list.innerHTML = '<div class="skeleton" style="height: 50px;"></div>';
+
+    try {
+        const response = await fetch('/api/files');
+        const data = await response.json();
+        renderFiles(data.files || []);
+    } catch (e) {
+        console.error('Error loading files:', e);
+        list.innerHTML = '<div class="empty-state">Failed to load files</div>';
     }
+}
 
-    const target = document.getElementById(targetId);
-    if (target) target.classList.remove('hidden');
+function renderFiles(files) {
+    const list = document.getElementById('file-grid');
+    if (!list) return;
 
-    // Update Nav Buttons
-    document.querySelectorAll('.rail-btn, .nav-btn').forEach(btn => btn.classList.remove('active'));
-    const activeBtn = document.getElementById(`nav-btn-${viewId}`);
-    if (activeBtn) activeBtn.classList.add('active');
+    // Apply correct class for layout
+    const isGrid = fileViewMode !== 'list';
+    list.className = isGrid ? 'file-grid' : 'file-list';
 
-    if (viewId === 'files') loadFiles();
-    if (viewId === 'dashboard') loadStats();
-    if (viewId === 'chat') {
-        document.getElementById('input-bar').classList.remove('hidden');
-        scrollToBottom();
-    }
-};
-
-
-// ============== KNOWLEDGE GRAPH ==============
-let graphSimulation = null;
-
-async function loadKnowledgeGraph() {
-    const container = document.getElementById('graph-container');
-    const loading = document.getElementById('graph-loading');
-    
-    // Check if D3 is loaded
-    if (typeof d3 === 'undefined') {
-        container.innerHTML = '<div style="color:white;text-align:center;padding:50px;">D3.js not loaded</div>';
+    if (files.length === 0) {
+        list.innerHTML = `<div class="empty-state"><p>No files uploaded</p></div>`;
         return;
     }
-    
-    // Clear previous
-    container.innerHTML = '';
-    loading.style.display = 'block';
 
-    try {
-        const response = await fetch('/api/graph');
-        const data = await response.json();
-        loading.style.display = 'none';
+    window.allFiles = files; // Store globally for tag operations
 
-        if (!data.nodes || data.nodes.length === 0) {
-            container.innerHTML = '<div style="color:#666;text-align:center;padding:50px;">Graph Empty. Index more files.</div>';
-            return;
-        }
+    list.innerHTML = files.map(file => {
+        const tagHtml = renderTags(file.name, file.tags || []);
 
-        const width = container.clientWidth;
-        const height = container.clientHeight;
-
-        // Color scale
-        const color = d3.scaleOrdinal()
-            .domain(['document', 'term'])
-            .range(['#4facfe', '#ff6b6b']);
-
-        // Simulation
-        const simulation = d3.forceSimulation(data.nodes)
-            .force("link", d3.forceLink(data.links).id(d => d.id).distance(100))
-            .force("charge", d3.forceManyBody().strength(-300))
-            .force("center", d3.forceCenter(width / 2, height / 2))
-            .force("collide", d3.forceCollide().radius(d => d.radius + 5));
-
-        graphSimulation = simulation;
-
-        // SVG
-        const svg = d3.select("#graph-container").append("svg")
-            .attr("width", width)
-            .attr("height", height)
-            .call(d3.zoom().on("zoom", (event) => {
-                g.attr("transform", event.transform);
-            }))
-            .append("g");
-
-        const g = svg.append("g");
-
-        // Links
-        const link = g.append("g")
-            .attr("stroke", "#999")
-            .attr("stroke-opacity", 0.6)
-            .selectAll("line")
-            .data(data.links)
-            .join("line")
-            .attr("stroke-width", d => Math.sqrt(d.value || 1));
-
-        // Nodes
-        const node = g.append("g")
-            .attr("stroke", "#fff")
-            .attr("stroke-width", 1.5)
-            .selectAll("circle")
-            .data(data.nodes)
-            .join("circle")
-            .attr("r", d => d.type === 'document' ? 12 : 6)
-            .attr("fill", d => color(d.type))
-            .call(drag(simulation));
-
-        // Labels
-        const label = g.append("g")
-            .attr("class", "labels")
-            .selectAll("text")
-            .data(data.nodes)
-            .join("text")
-            .attr("dy", d => d.type === 'document' ? -15 : 10)
-            .attr("dx", d => d.type === 'document' ? 0 : 8)
-            .text(d => d.label)
-            .attr("fill", "#ddd")
-            .attr("font-size", d => d.type === 'document' ? "12px" : "10px")
-            .style("pointer-events", "none")
-            .style("text-anchor", "middle");
-
-        node.append("title")
-            .text(d => d.label);
-
-        // Tick
-        simulation.on("tick", () => {
-            link
-                .attr("x1", d => d.source.x)
-                .attr("y1", d => d.source.y)
-                .attr("x2", d => d.target.x)
-                .attr("y2", d => d.target.y);
-
-            node
-                .attr("cx", d => d.x)
-                .attr("cy", d => d.y);
+        if (isGrid) {
+            // GRID VIEW (Card)
+            return `
+            <div class="file-card" ondblclick="deleteFile('${file.name}')" title="${file.name}">
+                <div class="file-icon">${getFileIcon(file.name)}</div>
+                <div class="file-info">
+                    <div class="file-name">${file.name}</div>
+                    <div class="file-tags-container" style="display:flex; flex-wrap:wrap; gap:4px; margin-top:5px; justify-content:center;">
+                        ${tagHtml}
+                        <button class="add-tag-btn" onclick="promptAddTag('${file.name}')" style="background:none; border:1px dashed var(--text-muted); color:var(--text-muted); border-radius:10px; cursor:pointer; font-size:10px; padding:2px 6px;">+</button>
+                    </div>
+                    <div class="file-meta" style="margin-top:5px;">${formatFileSize(file.size)}</div>
+                </div>
+                 <button class="delete-btn-overlay" onclick="deleteFile('${file.name}')" title="Delete">×</button>
+            </div>`;
+        } else {
+            // LIST VIEW (Row)
+            // Name (30%) | Tags (30%) | Size (15%) | Date (15%) | Actions (10%)
+            return `
+            <div class="file-item" style="display:grid; grid-template-columns: 2fr 2fr 1fr 1.5fr 40px; align-items:center; padding:10px 15px; border-bottom:1px solid var(--border-color); gap:10px; width:100%;">
                 
-            label
-                .attr("x", d => d.x)
-                .attr("y", d => d.y);
-        });
+                <!-- Name & Icon (Left) -->
+                <div style="display:flex; align-items:center; gap:12px; overflow:hidden; justify-content: flex-start;">
+                    <div class="file-icon" style="font-size:1.4em; min-width: 24px; text-align:center;">${getFileIcon(file.name)}</div>
+                    <div class="file-name" style="font-weight:600; font-size: 0.95em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-color);">${file.name}</div>
+                </div>
 
-        // Drag helpers
-        function drag(simulation) {
-            function dragstarted(event) {
-                if (!event.active) simulation.alphaTarget(0.3).restart();
-                event.subject.fx = event.subject.x;
-                event.subject.fy = event.subject.y;
-            }
+                <!-- Tags (Center) -->
+                <div style="display:flex; flex-wrap:wrap; gap:5px; align-items:center;">
+                    ${tagHtml}
+                    <button onclick="promptAddTag('${file.name}')" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:14px; opacity:0.5;">+</button>
+                </div>
 
-            function dragged(event) {
-                event.subject.fx = event.x;
-                event.subject.fy = event.y;
-            }
+                <!-- Size -->
+                 <div style="color:var(--text-color); font-size:0.9em; text-align:center;">${formatFileSize(file.size)}</div>
 
-            function dragended(event) {
-                if (!event.active) simulation.alphaTarget(0);
-                event.subject.fx = null;
-                event.subject.fy = null;
-            }
+                <!-- Date (Right) -->
+                <div style="color:var(--text-secondary); font-size:0.85em; text-align:right;">
+                    ${file.modified || file.created || '-'}
+                </div>
 
-            return d3.drag()
-                .on("start", dragstarted)
-                .on("drag", dragged)
-                .on("end", dragended);
+                <!-- Actions -->
+                <div class="file-actions" style="text-align:right; display:flex; justify-content:flex-end;">
+                     <button class="icon-btn delete-btn" onclick="deleteFile('${file.name}')" title="Delete" style="background:rgba(255,0,0,0.1); border:none; color:var(--danger-color); cursor:pointer; font-size: 1em; padding: 6px; border-radius: 4px; display:flex; align-items:center; justify-content:center; width: 30px; height: 30px;">
+                        🗑️
+                     </button>
+                </div>
+            </div>`;
         }
+    }).join('');
+}
 
-    } catch (error) {
-        console.error("Graph Error:", error);
-        container.innerHTML = `<div style="color:red;padding:20px;">Error loading graph: ${error.message}</div>`;
+function renderTags(filename, tags) {
+    if (!tags || tags.length === 0) return '';
+    return tags.map(tag => `
+        <span class="file-tag" style="background:var(--accent-color); color:white; padding:2px 6px; border-radius:10px; font-size:10px; display:inline-flex; align-items:center; gap:3px;">
+            ${tag}
+            <span onclick="removeTag('${filename}', '${tag}')" style="cursor:pointer; opacity:0.7; font-weight:bold;">×</span>
+        </span>
+    `).join('');
+}
+
+async function promptAddTag(filename) {
+    const tag = prompt("Enter tag name:");
+    if (!tag) return;
+
+    // Find file
+    const file = window.allFiles.find(f => f.name === filename);
+    if (!file) return;
+
+    const currentTags = file.tags || [];
+    if (currentTags.includes(tag)) return;
+
+    const newTags = [...currentTags, tag];
+    await updateFileTags(filename, newTags);
+}
+
+async function removeTag(filename, tag) {
+    const file = window.allFiles.find(f => f.name === filename);
+    if (!file) return;
+
+    const newTags = (file.tags || []).filter(t => t !== tag);
+    await updateFileTags(filename, newTags);
+}
+
+async function updateFileTags(filename, tags) {
+    try {
+        const response = await fetch(`/api/files/${filename}/tags`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tags })
+        });
+        if (response.ok) {
+            loadFiles(); // Reload to refresh grid
+        } else {
+            showToast('Failed to update tags', 'error');
+        }
+    } catch (e) {
+        console.error(e);
+        showToast('Error updating tags', 'error');
     }
 }
 
-// ============== HELPERS ==============
-function getFileIcon(filename) {
-    const ext = filename.split('.').pop().toLowerCase();
-    // Icons8 icon URLs for file types
-    const icons = {
-        'pdf': '<img src="https://img.icons8.com/?id=299&format=png&size=24" class="icon file-icon" alt="PDF">',
-        'doc': '<img src="https://img.icons8.com/?id=11571&format=png&size=24" class="icon file-icon" alt="DOC">',
-        'docx': '<img src="https://img.icons8.com/?id=11571&format=png&size=24" class="icon file-icon" alt="DOCX">',
-        'txt': '<img src="https://img.icons8.com/?id=2290&format=png&size=24" class="icon file-icon" alt="TXT">',
-        'md': '<img src="https://img.icons8.com/?id=21812&format=png&size=24" class="icon file-icon" alt="MD">',
-        'json': '<img src="https://img.icons8.com/?id=22441&format=png&size=24" class="icon file-icon" alt="JSON">',
-        'csv': '<img src="https://img.icons8.com/?id=2577&format=png&size=24" class="icon file-icon" alt="CSV">',
-        'xls': '<img src="https://img.icons8.com/?id=11566&format=png&size=24" class="icon file-icon" alt="XLS">',
-        'xlsx': '<img src="https://img.icons8.com/?id=11566&format=png&size=24" class="icon file-icon" alt="XLSX">',
-        'png': '<img src="https://img.icons8.com/?id=11561&format=png&size=24" class="icon file-icon" alt="PNG">',
-        'jpg': '<img src="https://img.icons8.com/?id=11561&format=png&size=24" class="icon file-icon" alt="JPG">',
-        'jpeg': '<img src="https://img.icons8.com/?id=11561&format=png&size=24" class="icon file-icon" alt="JPEG">',
-        'gif': '<img src="https://img.icons8.com/?id=11561&format=png&size=24" class="icon file-icon" alt="GIF">',
-        'py': '<img src="https://img.icons8.com/?id=12584&format=png&size=24" class="icon file-icon" alt="Python">',
-        'js': '<img src="https://img.icons8.com/?id=39853&format=png&size=24" class="icon file-icon" alt="JS">',
-        'html': '<img src="https://img.icons8.com/?id=1043&format=png&size=24" class="icon file-icon" alt="HTML">',
-        'css': '<img src="https://img.icons8.com/?id=1045&format=png&size=24" class="icon file-icon" alt="CSS">'
-    };
-    return icons[ext] || '<img src="https://img.icons8.com/?id=1395&format=png&size=24" class="icon file-icon" alt="File">';
+async function deleteFile(filename) {
+    if (!confirm(`Delete ${filename}?`)) return;
+    try {
+        // Use encodeURIComponent to handle special characters in filenames
+        const response = await fetch(`/api/files/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+        if (response.ok) {
+            showToast('File deleted', 'success');
+            loadFiles();
+            loadStats();
+        } else {
+            const data = await response.json();
+            showToast(data.error || 'Failed to delete file', 'error');
+        }
+    } catch (e) {
+        console.error(e);
+        showToast('Network error deleting file', 'error');
+    }
 }
 
 function formatFileSize(bytes) {
-    if (bytes === 0) return '0 B';
+    if (bytes === 0) return '0 Bytes';
     const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-function formatDate(timestamp) {
-    return new Date(timestamp * 1000).toLocaleDateString('en-US', {
-        month: 'short', day: 'numeric', year: 'numeric'
-    });
+function getFileIcon(filename) {
+    return '📄';
 }
 
-// ==========================================
 // SEARCH & FILTER LOGIC
 // ==========================================
 
@@ -789,40 +804,180 @@ function renderSearchResults(data) {
     `);
 }
 
+// ==========================================
+// PROMPT LIBRARY (Refactored v2.3)
+// ==========================================
+let allPrompts = []; // Store locally for client-side search
+
 function openPromptLibrary() {
-    const modal = document.getElementById('prompt-modal');
+    const modal = document.getElementById('prompt-library-modal');
+    if (!modal) return;
     modal.style.display = 'flex';
     loadPrompts();
+    showPromptList(); // Ensure list view is default
+}
+
+function closePromptLibrary() {
+    const modal = document.getElementById('prompt-library-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+function showCreatePromptForm() {
+    const listView = document.getElementById('prompt-list-view');
+    const formView = document.getElementById('prompt-form-view');
+    if (listView) listView.style.display = 'none';
+    if (formView) formView.style.display = 'block';
+    // Clear inputs
+    const titleInput = document.getElementById('prompt-title-input');
+    const contentInput = document.getElementById('prompt-content-input');
+    if (titleInput) titleInput.value = '';
+    if (contentInput) contentInput.value = '';
+}
+
+function showPromptList() {
+    const formView = document.getElementById('prompt-form-view');
+    const listView = document.getElementById('prompt-list-view');
+    if (formView) formView.style.display = 'none';
+    if (listView) listView.style.display = 'block';
 }
 
 async function loadPrompts() {
-    const container = document.getElementById('prompt-list');
+    const container = document.getElementById('prompts-container');
+    container.innerHTML = '<div style="text-align:center; padding:20px; color:var(--text-muted);">Loading...</div>';
+
     try {
         const res = await fetch('/api/prompts');
-        const prompts = await res.json();
-
-        container.innerHTML = '';
-        if (prompts.length === 0) {
-            container.innerHTML = '<div style="text-align: center; color: var(--text-muted);">No prompts saved yet. Create one above!</div>';
-            return;
-        }
-
-        prompts.forEach(p => {
-            const card = document.createElement('div');
-            card.style.cssText = 'background: var(--card-bg); border: 1px solid var(--border-color); padding: 12px; border-radius: 8px; position: relative;';
-            card.innerHTML = `
-                <div style="font-weight: 600; margin-bottom: 5px; display: flex; justify-content: space-between;">
-                    <span>${p.title}</span>
-                    <button onclick="deletePrompt(${p.id})" style="color: var(--error-color); background: none; border: none; cursor: pointer;">🗑️</button>
-                </div>
-                <div style="font-size: 0.9em; color: var(--text-secondary); max-height: 60px; overflow: hidden; margin-bottom: 10px;">${p.content}</div>
-                <button class="secondary-btn" onclick="usePrompt('${p.content.replace(/'/g, "\\'")}')" style="width: 100%; padding: 6px; font-size: 0.9em;">Use This Prompt</button>
-            `;
-            container.appendChild(card);
-        });
+        allPrompts = await res.json();
+        renderPrompts(allPrompts);
     } catch (e) {
-        container.innerHTML = '<div style="color: var(--error-color);">Error loading prompts.</div>';
+        container.innerHTML = '<div style="color:var(--error-color); padding:20px; text-align:center;">Error loading prompts.</div>';
+        showToast('Failed to load prompts', 'error');
     }
+}
+
+function renderPrompts(prompts) {
+    const container = document.getElementById('prompts-container');
+    container.innerHTML = '';
+
+    if (prompts.length === 0) {
+        container.innerHTML = `
+            <div style="text-align: center; padding: 40px 20px; color: var(--text-muted);">
+                <div style="font-size: 2em; margin-bottom: 10px;">📝</div>
+                <div>No saved prompts found.</div>
+                <div style="font-size: 0.9em; margin-top: 5px;">Create one to get started!</div>
+            </div>`;
+        return;
+    }
+
+    prompts.forEach(p => {
+        const card = document.createElement('div');
+        card.style.cssText = 'padding:15px; border-bottom:1px solid var(--border-color); transition:background 0.2s;';
+        card.onmouseenter = () => card.style.background = 'rgba(255,255,255,0.03)';
+        card.onmouseleave = () => card.style.background = 'transparent';
+
+        // Store content in dataset to avoid escaping issues
+        card.dataset.promptContent = p.content;
+        card.dataset.promptId = p.id;
+
+        card.innerHTML = `
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <div style="font-weight:600; color:var(--text-color); font-size:1em;">${escapeHtml(p.title)}</div>
+                <button class="delete-prompt-btn" title="Delete Prompt" 
+                    style="color:var(--text-muted); background:none; border:none; cursor:pointer; padding:4px; font-size:1em; opacity:0.6; transition:opacity 0.2s;"
+                    onmouseenter="this.style.opacity=1" onmouseleave="this.style.opacity=0.6">
+                    🗑️
+                </button>
+            </div>
+            <div style="font-size:0.85em; color:var(--text-secondary); max-height:50px; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; margin-bottom:10px;">
+                ${escapeHtml(p.content)}
+            </div>
+            <button class="use-prompt-btn primary-btn" style="width:100%; padding:8px; font-size:0.9em; border-radius:6px;">
+                ✨ Use This Prompt
+            </button>
+        `;
+
+        // Attach event listeners safely
+        card.querySelector('.delete-prompt-btn').addEventListener('click', () => deletePrompt(p.id));
+        card.querySelector('.use-prompt-btn').addEventListener('click', () => usePrompt(p.content));
+
+        container.appendChild(card);
+    });
+}
+
+function filterPrompts() {
+    const query = document.getElementById('prompt-search').value.toLowerCase();
+    const filtered = allPrompts.filter(p =>
+        p.title.toLowerCase().includes(query) ||
+        p.content.toLowerCase().includes(query)
+    );
+    renderPrompts(filtered);
+}
+
+async function savePrompt() {
+    const title = document.getElementById('prompt-title-input').value.trim();
+    const content = document.getElementById('prompt-content-input').value.trim();
+
+    if (!title || !content) {
+        showToast('Title and content are required', 'warning');
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/prompts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title, content })
+        });
+
+        if (res.ok) {
+            showToast('Prompt saved!', 'success');
+            showPromptList();
+            loadPrompts(); // Reload list
+        } else {
+            showToast('Failed to save prompt', 'error');
+        }
+    } catch (e) {
+        showToast('Error saving prompt', 'error');
+    }
+}
+
+async function deletePrompt(id) {
+    if (!confirm('Are you sure you want to delete this prompt?')) return;
+
+    try {
+        const res = await fetch(`/api/prompts/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+            showToast('Prompt deleted', 'success');
+            loadPrompts();
+        } else {
+            showToast('Failed to delete prompt', 'error');
+        }
+    } catch (e) {
+        showToast('Error deleting prompt', 'error');
+    }
+}
+
+function usePrompt(content) {
+    // Update the system prompt textarea
+    const systemPrompt = document.getElementById('system-prompt');
+    if (systemPrompt) {
+        systemPrompt.value = content;
+    }
+
+    // Close the modal
+    closePromptLibrary();
+
+    // Navigate to chat view
+    showView('chat');
+
+    // Paste content into the chat message input
+    const messageInput = document.getElementById('chat-input');
+    if (messageInput) {
+        messageInput.value = content;
+        messageInput.focus();
+    }
+
+    showToast('Prompt loaded! Ready to send.', 'success');
 }
 
 async function savePrompt() {
@@ -854,14 +1009,6 @@ async function deletePrompt(id) {
     loadPrompts();
 }
 
-function usePrompt(content) {
-    document.getElementById('prompt-modal').style.display = 'none';
-    showView('chat');
-    // Set content to input box
-    const input = document.getElementById('message-input');
-    input.value = content;
-    input.focus();
-}
 
 function escapeHtml(text) {
     const div = document.createElement('div');
@@ -872,6 +1019,25 @@ function escapeHtml(text) {
 function showToast(message, type = 'info') {
     const container = document.getElementById('toast-container');
     if (!container) return;
+
+    // Get notification duration from setting (in seconds), default to 3
+    let durationSeconds = 3;
+    const durationInput = document.getElementById('notification-duration');
+    if (durationInput && durationInput.value) {
+        durationSeconds = parseInt(durationInput.value) || 3;
+    }
+    const durationMs = durationSeconds * 1000;
+
+    // Desktop Notification Trigger
+    const desktopEnabled = document.getElementById('desktop-notifications')?.checked;
+    if (desktopEnabled && 'Notification' in window && Notification.permission === 'granted') {
+        try {
+            const n = new Notification('Onyx', { body: message });
+            // Auto-close after duration
+            setTimeout(() => n.close(), durationMs);
+        } catch (e) { console.error('Notification error', e); }
+    }
+
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
     let icon = type === 'error' ? '❌' : type === 'success' ? '✅' : type === 'warning' ? '⚠️' : 'ℹ️';
@@ -880,7 +1046,7 @@ function showToast(message, type = 'info') {
     setTimeout(() => {
         toast.style.animation = 'fadeOut 0.5s ease-out forwards';
         setTimeout(() => toast.remove(), 500);
-    }, 3000);
+    }, durationMs);
 }
 
 // Override default alert
@@ -973,6 +1139,9 @@ function showSessionContextMenu(event, sessionId, sessionName, isPinned) {
         <div class="context-menu-item" onclick="toggleSessionPin(${sessionId}, ${isPinned || 0}); document.getElementById('context-menu').classList.remove('visible');">
             ${pinIcon} ${pinText} Session
         </div>
+        <div class="context-menu-item" onclick="openRenameModal(${sessionId}, '${sessionName}'); document.getElementById('context-menu').classList.remove('visible');">
+            [R] Rename
+        </div>
         <div class="context-menu-item" onclick="exportSession(${sessionId}, '${sessionName}', 'txt')">
             [TXT] Export as TXT
         </div>
@@ -1014,27 +1183,142 @@ async function exportSession(sessionId, sessionName, format) {
 
 // ============== HEALTH CHECK ==============
 async function checkHealth() {
+    // Global Header Elements
     const dot = document.getElementById('status-dot');
     const text = document.getElementById('status-text');
-    if (!dot || !text) return;
 
-    dot.className = 'status-dot loading';
-    text.innerText = 'Checking...';
+    // Control Panel Elements
+    const ctrlDot = document.getElementById('ollama-ctrl-dot');
+    const ctrlText = document.getElementById('ollama-ctrl-text');
+    const btnStart = document.getElementById('btn-ollama-start');
+    const btnRestart = document.getElementById('btn-ollama-restart');
+
+    // console.log("checkHealth running...");
+
+    // Set Loading State ONLY if not already checking (to avoid flicker)
+    // Actually, setting loading state on every poll might be annoying.
+    // Let's only set loading if verification takes > 500ms? No, stick to simple for now.
+    // To mimic "Connected" feeling, we don't always flash 'Checking...' in the UI unless it's a manual refresh.
+    // But since this function is also called by polling, we should be subtle.
+    // Recommendation: Don't change text to "Checking..." for polling, only for manual or initial.
+    // For now, let's just update the status effectively.
 
     try {
         const response = await fetch('/api/health');
         const data = await response.json();
 
+        let isConnected = false;
+        let isBackendUp = false;
+
         if (data.ollama && data.ollama.available) {
-            dot.className = 'status-dot';
-            text.innerText = 'Connected';
+            isConnected = true;
+            if (dot) dot.title = `Model: ${data.ollama.model || 'Unknown'}`;
+        } else if (data.status === 'online' || response.ok) {
+            isBackendUp = true;
+            if (dot) dot.title = "Backend is online, but no model responding";
+        }
+
+        // --- UPDATE UI STATE ---
+        const statusClass = isConnected ? 'status-dot' : (isBackendUp ? 'status-dot loading' : 'status-dot offline');
+        // Note: 'loading' is yellow/orange, good for "Backend Up but No Logic", 'offline' is red.
+        const statusMsg = isConnected ? 'Connected' : (isBackendUp ? 'Backend Ready' : 'Offline');
+
+        // Update Global Header
+        if (dot) dot.className = statusClass;
+        if (text) text.innerText = statusMsg;
+
+        // Update Control Panel
+        if (ctrlDot) ctrlDot.className = statusClass;
+        if (ctrlText) ctrlText.innerText = statusMsg;
+
+        // Update Unified Status Bar (System Status)
+        const unifiedStatus = document.getElementById('ollama-status');
+        if (unifiedStatus) {
+            unifiedStatus.innerText = statusMsg;
+            unifiedStatus.style.color = isConnected ? 'var(--success-color)' : (isBackendUp ? 'var(--warning-color)' : 'var(--error-color)');
+        }
+
+        // Update Buttons
+        if (btnStart) {
+            if (isConnected) {
+                // RUNNING
+                btnStart.disabled = true;
+                btnStart.style.opacity = '0.5';
+                btnStart.style.cursor = 'not-allowed';
+                btnStart.innerHTML = '<span>✔</span> Running';
+            } else {
+                // STOPPED
+                btnStart.disabled = false;
+                btnStart.style.opacity = '1';
+                btnStart.style.cursor = 'pointer';
+                btnStart.innerHTML = '<span>▶</span> Start';
+            }
+        }
+
+        // Ensure Restart is always enabled (unless we are performing an action, handled by controlOllama)
+        // But if restart is currently running, controlOllama handles the disables. 
+        // We shouldn't re-enable it if it was disabled by controlOllama?
+        // Actually controlOllama disables it, then awaits logic, then runs checkHealth.
+        // So checkHealth effectively re-evaluates state.
+
+    } catch (e) {
+        console.error("Health Check Error:", e);
+        if (dot) dot.className = 'status-dot offline';
+        if (text) text.innerText = 'Error';
+        if (ctrlDot) ctrlDot.className = 'status-dot offline';
+        if (ctrlText) ctrlText.innerText = 'Connection Error';
+
+        const unifiedStatus = document.getElementById('ollama-status');
+        if (unifiedStatus) {
+            unifiedStatus.innerText = 'Error';
+            unifiedStatus.style.color = 'var(--error-color)';
+        }
+
+        // If error, enable start button potentially? Or disable everything?
+        // Safest: Enable start in case it's just down.
+        if (btnStart) {
+            btnStart.disabled = false;
+            btnStart.style.opacity = '1';
+            btnStart.style.cursor = 'pointer';
+            btnStart.innerText = '▶ Start';
+        }
+    }
+}
+
+async function controlOllama(action) {
+    const btn = document.getElementById(`btn-ollama-${action}`);
+    const originalText = btn ? btn.innerText : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerText = '⏳ ...';
+    }
+
+    showToast(`Attempting to ${action} Ollama...`, 'info');
+
+    try {
+        const response = await fetch('/api/system/ollama/control', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: action })
+        });
+        const data = await response.json();
+
+        if (data.status === 'success') {
+            showToast(data.message, 'success');
+            // Poll for health update after delay
+            setTimeout(checkHealth, 2000);
+            setTimeout(checkHealth, 5000);
         } else {
-            dot.className = 'status-dot offline';
-            text.innerText = 'Offline';
+            showToast('Error: ' + data.error, 'error');
         }
     } catch (e) {
-        dot.className = 'status-dot offline';
-        text.innerText = 'Error';
+        showToast('Network error: ' + e.message, 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerText = originalText;
+            checkHealth(); // Re-check status immediately to update UI state
+        }
     }
 }
 
@@ -1241,7 +1525,7 @@ async function toggleSessionPin(sessionId, currentStatus, event) {
             body: JSON.stringify({ is_pinned: !currentStatus })
         });
         const data = await response.json();
-        if (data.success) {
+        if (data.status === 'success') {
             loadSessions(); // Reload list
         } else {
             console.error('Failed to toggle pin');
@@ -1254,6 +1538,37 @@ async function toggleSessionPin(sessionId, currentStatus, event) {
 }
 
 
+/**
+ * Export a chat session as Markdown file
+ */
+async function exportSession(sessionId, event) {
+    if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+    }
+
+    try {
+        showToast('Exporting chat...', 'info');
+
+        // Use Markdown format for better readability
+        const url = `/api/sessions/${sessionId}/export?format=md`;
+
+        // Create a temporary link to trigger download
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `chat_${sessionId}.md`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        showToast('Chat exported successfully!', 'success');
+    } catch (e) {
+        console.error('Error exporting session:', e);
+        showToast('Failed to export chat', 'error');
+    }
+}
+
+
 async function loadSessions() {
     try {
         const response = await fetch('/api/sessions');
@@ -1262,10 +1577,10 @@ async function loadSessions() {
         const list = document.getElementById('session-list');
         if (!list) return;
 
-        // Update currentSessionId from server if not set
-        if (!currentSessionId && data.current) {
-            currentSessionId = data.current;
-        }
+        // Auto-selection removed: Do not defaults to data.current
+        // if (!currentSessionId && data.current) {
+        //     currentSessionId = data.current;
+        // }
 
         list.innerHTML = sessions.map(session => {
             const isSelected = selectedSessions.has(session.id);
@@ -1288,13 +1603,26 @@ async function loadSessions() {
                 const pinTitle = isPinned ? 'Unpin Session' : 'Pin Session';
 
                 actionHtml = `
-                    <button class="action-btn" onclick="toggleSessionPin(${session.id}, ${isPinned || 0}, event)" title="${pinTitle}" style="background:none; border:none; cursor:pointer; padding:2px; margin-right:4px; opacity: ${isPinned ? 1 : 0.5}; transition: opacity 0.2s;">
+                    <button class="action-btn" onclick="toggleSessionPin(${session.id}, ${isPinned || 0}, event)" title="${pinTitle}">
                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="${isPinned ? pinColor : 'none'}" stroke="${pinColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <line x1="12" y1="17" x2="12" y2="22"></line>
                             <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17z"></path>
                         </svg>
                     </button>
-                    <button class="delete-session-btn" onclick="deleteSession(${session.id}, event)" title="Delete Session" style="opacity: 0.5;">
+                    <button class="action-btn" onclick="openRenameModal(${session.id}, '${escapeHtml(session.name)}', event)" title="Rename Chat">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                           <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                           <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                        </svg>
+                    </button>
+                    <button class="action-btn export-btn" onclick="exportSession(${session.id}, event)" title="Export Chat">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="7 10 12 15 17 10"></polyline>
+                            <line x1="12" y1="15" x2="12" y2="3"></line>
+                        </svg>
+                    </button>
+                    <button class="delete-session-btn" onclick="deleteSession(${session.id}, event)" title="Delete Session">
                         <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="#e74c3c">
                             <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM8 9h8v10H8V9zm7.5-5l-1-1h-5l-1 1H5v2h14V4h-3.5z"/>
                             <path d="M9 12h2v5H9zm4 0h2v5h-2z" fill="white"/>
@@ -1306,10 +1634,10 @@ async function loadSessions() {
             return `
             <div class="history-item ${session.id === currentSessionId ? 'active' : ''}" 
                  onclick="switchSession(${session.id})"
-                 oncontextmenu="showSessionContextMenu(event, ${session.id}, '${session.name.replace(/'/g, "\\'")}', ${session.is_pinned || 0})"
-                 title="${session.name}" style="display: flex; align-items: center;">
+                oncontextmenu="showSessionContextMenu(event, ${session.id}, '${escapeHtml(session.name)}', ${session.is_pinned || 0})"
+                 title="${escapeHtml(session.name)}" style="display: flex; align-items: center;">
                 ${selectionHtml}
-                <span class="history-name" style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${session.name}</span>
+                <span class="history-name" style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(session.name)}</span>
                 ${actionHtml}
             </div>
         `}).join('');
@@ -1324,6 +1652,7 @@ async function loadSessions() {
         }
     } catch (e) {
         console.error('Failed to load sessions:', e);
+        showToast('Failed to load sessions', 'error');
     }
 }
 
@@ -1339,8 +1668,12 @@ function newChat() {
     }
 
     // Show Empty State
-    const emptyState = document.getElementById('chat-empty-state');
-    if (emptyState) emptyState.style.display = 'flex';
+    if (typeof toggleEmptyState === 'function') {
+        toggleEmptyState(true);
+    } else {
+        const emptyState = document.getElementById('chat-empty-state');
+        if (emptyState) emptyState.style.display = 'flex';
+    }
 
     // Update sidebar to show no active session
     document.querySelectorAll('.history-item').forEach(item => {
@@ -1348,6 +1681,9 @@ function newChat() {
     });
 
     showView('chat');
+    // Ensure no modals are trapping focus
+    hideConfirmModal();
+    closeRenameModal();
     showToast('New chat ready', 'success');
 }
 
@@ -1451,6 +1787,10 @@ async function loadChatHistory() {
 
         if (data.messages && data.messages.length > 0) {
             toggleEmptyState(false);
+            // track last ID
+            const lastMsg = data.messages[data.messages.length - 1];
+            if (lastMsg && lastMsg.id) lastMessageId = lastMsg.id;
+
             historyContainer.innerHTML = data.messages.map(msg => `
                 <div class="chat-message ${msg.role}-message">
                     <div class="message-content">${msg.role === 'assistant' ? (typeof marked !== 'undefined' ? marked.parse(msg.content) : msg.content) : msg.content}</div>
@@ -1460,6 +1800,7 @@ async function loadChatHistory() {
         } else {
             toggleEmptyState(true);
             historyContainer.innerHTML = '';
+            lastMessageId = 0;
         }
         // Re-add scroll anchor after innerHTML replacement
         ensureScrollAnchor();
@@ -1472,11 +1813,56 @@ async function loadChatHistory() {
     }
 }
 
+// ============== REAL-TIME SYNC ==============
+async function pollChatMessages() {
+    if (!currentSessionId || currentMode !== 'browser') return;
+
+    try {
+        const url = `/api/sessions/${currentSessionId}?after_id=${lastMessageId}`;
+        const response = await fetch(url);
+        if (!response.ok) return;
+
+        const data = await response.json();
+        if (data.messages && data.messages.length > 0) {
+            const historyContainer = document.getElementById('chat-history');
+            if (historyContainer) {
+                // Remove empty state if present
+                const emptyState = document.getElementById('chat-empty-state');
+                if (emptyState && emptyState.style.display !== 'none') {
+                    toggleEmptyState(false);
+                }
+
+                data.messages.forEach(msg => {
+                    // Update last ID
+                    if (msg.id > lastMessageId) lastMessageId = msg.id;
+
+                    // Append Message
+                    const div = document.createElement('div');
+                    div.className = `chat-message ${msg.role}-message`;
+                    div.innerHTML = `
+                        <div class="message-content">${msg.role === 'assistant' ? (typeof marked !== 'undefined' ? marked.parse(msg.content) : msg.content) : msg.content}</div>
+                        <div class="message-meta">${new Date(msg.created_at).toLocaleTimeString()}</div>
+                    `;
+                    historyContainer.appendChild(div);
+                });
+                scrollToBottom();
+            }
+        }
+    } catch (e) {
+        // Silent fail for polling
+    }
+}
+
 
 async function sendMessage() {
     const input = document.getElementById('chat-input');
     const message = input.value.trim();
-    if (!message) return;
+    const images = (typeof currentFiles !== 'undefined' && currentFiles) ? currentFiles.filter(f => f.type === 'image') : [];
+    const docs = (typeof currentFiles !== 'undefined' && currentFiles) ? currentFiles.filter(f => f.type === 'document') : [];
+    const hasFiles = images.length > 0 || docs.length > 0;
+
+    if (!message && !hasFiles) return;
+    if (isGenerating) return; // Prevent double-submit
 
     if (!currentSessionId) {
         // Create session on first message (lazy creation)
@@ -1510,8 +1896,35 @@ async function sendMessage() {
     const oldPlaceholder = historyContainer.querySelector('.empty-state');
     if (oldPlaceholder) oldPlaceholder.remove();
 
-    // Add user message visually
-    historyContainer.innerHTML += `<div class="chat-message user-message"><div class="message-content">${escapeHtml(message)}</div></div>`;
+    // Add user message visually with attachments
+    let userMsgHTML = `<div class="chat-message user-message">`;
+    userMsgHTML += `<div class="message-content">${escapeHtml(message)}</div>`;
+
+    // Render attachments inline if present
+    if (hasFiles) {
+        if (images.length > 0) {
+            userMsgHTML += `<div class="message-attachments">`;
+            for (const img of images) {
+                userMsgHTML += `<img src="${img.data}" title="${escapeHtml(img.name)}" style="max-width: 200px; max-height: 200px; border-radius: 8px; margin: 4px; object-fit: cover;">`;
+            }
+            userMsgHTML += `</div>`;
+        }
+        if (docs.length > 0) {
+            userMsgHTML += `<div class="message-attachments">`;
+            for (const doc of docs) {
+                const ext = doc.name.split('.').pop().toUpperCase();
+                userMsgHTML += `<div class="doc-chip" style="display: inline-flex; align-items: center; padding: 8px 12px; background: var(--bg-dark); border-radius: 6px; margin: 4px; font-size: 0.85em;">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 6px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 18v-6"/><path d="m9 15 3 3 3-3"/></svg>
+                    ${escapeHtml(doc.name)}
+                </div>`;
+            }
+            userMsgHTML += `</div>`;
+        }
+    }
+
+    userMsgHTML += `</div>`;
+    historyContainer.innerHTML += userMsgHTML;
+
 
     // Add bot message container
     const botMsgDiv = document.createElement('div');
@@ -1534,13 +1947,25 @@ async function sendMessage() {
 
     try {
         abortController = new AbortController();
+
+        // Build payload with files
+        const payload = {
+            message: message,
+            session_id: currentSessionId,
+            files: (typeof currentFiles !== 'undefined' && currentFiles) ? currentFiles : [],
+            deep_search: typeof isDeepSearchEnabled !== 'undefined' ? isDeepSearchEnabled : false
+        };
+
+        // Clear attachments immediately
+        if (typeof currentFiles !== 'undefined') {
+            currentFiles = [];
+            if (typeof renderFilePreviews === 'function') renderFilePreviews();
+        }
+
         const response = await fetch('/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                message: message, // Changed from question to message to match backend
-                session_id: currentSessionId
-            }),
+            body: JSON.stringify(payload),
             signal: abortController.signal
         });
 
@@ -1656,10 +2081,33 @@ function ensureScrollAnchor() {
 
 
 // ============== INDEX MANAGEMENT ==============
-async function clearIndex() {
-    if (!confirm('Are you sure you want to clear ALL indexed documents? This cannot be undone.')) {
+// ============== INDEX MANAGEMENT ==============
+async function clearIndex(btn) {
+    // 1. Check if button is already in "confirm" state
+    if (!btn.dataset.confirming) {
+        // First Click: Switch to Confirm State
+        btn.dataset.confirming = "true";
+        btn.dataset.originalText = btn.innerHTML;
+        btn.innerHTML = "⚠️ Click Again to Confirm";
+        btn.style.backgroundColor = "#ff3b30"; // Bright red
+        btn.style.transform = "scale(1.05)";
+
+        // Auto-reset after 3 seconds if not clicked
+        setTimeout(() => {
+            if (btn.dataset.confirming) {
+                delete btn.dataset.confirming;
+                btn.innerHTML = btn.dataset.originalText;
+                btn.style.backgroundColor = "";
+                btn.style.transform = "";
+            }
+        }, 3000);
         return;
     }
+
+    // 2. Confirmed Action
+    delete btn.dataset.confirming;
+    btn.innerHTML = "Clearing...";
+    btn.disabled = true;
 
     showToast('Clearing index...', 'info');
     try {
@@ -1675,6 +2123,12 @@ async function clearIndex() {
         }
     } catch (e) {
         showToast('Error clearing index: ' + e.message, 'error');
+    } finally {
+        // Restore button state
+        btn.innerHTML = btn.dataset.originalText;
+        btn.disabled = false;
+        btn.style.backgroundColor = "";
+        btn.style.transform = "";
     }
 }
 
@@ -1798,6 +2252,7 @@ function initApp(configMode, sessionId) {
 
     // Load initial data
     loadSessions();
+    loadFiles();
     checkHealth();
 
     // Show default view
@@ -1961,6 +2416,14 @@ setInterval(async function () {
             statusEl.innerHTML = `Mode: <strong>${isCli ? 'CLI Chat' : 'Browser Chat'}</strong>`;
         }
 
+        // 2. Sync Button State (Fixes persistence/reload issue)
+        document.querySelectorAll('.mode-btn').forEach(btn => {
+            btn.classList.remove('active');
+            if (btn.dataset.mode === config.mode) {
+                btn.classList.add('active');
+            }
+        });
+
         if (inputBar) {
             if (isCli) {
                 inputBar.classList.add('disabled');
@@ -1985,11 +2448,15 @@ setInterval(async function () {
                     chatContainer.appendChild(overlay);
                 }
             } else {
+                // Browser Mode
                 inputBar.classList.remove('disabled');
                 inputBar.style.opacity = '1';
-                inputBar.style.pointerEvents = 'auto'; // Fixed: 'all' is not standard for HTML
+                inputBar.style.pointerEvents = 'auto';
                 const overlay = document.getElementById('cli-overlay');
                 if (overlay) overlay.remove();
+
+                // Poll for new messages (Real-time Sync)
+                pollChatMessages();
             }
         }
 
@@ -2135,8 +2602,22 @@ async function submitRename() {
 }
 
 // ============== PAGE INITIALIZATION ==============
-// Auto-scroll chat to bottom when page loads
-document.addEventListener('DOMContentLoaded', function () {
+document.addEventListener('DOMContentLoaded', async function () {
+    // Initialize App Components
+    await checkHealth();
+    await loadSettings();
+    await loadSessions();
+    loadStats();
+
+    // Restore theme
+    const savedTheme = localStorage.getItem('theme') || 'dark';
+    if (savedTheme === 'light') {
+        document.body.classList.remove('dark-theme');
+    } else {
+        document.body.classList.add('dark-theme');
+    }
+    updateThemeIcon(savedTheme === 'dark');
+
     // Ensure anchor exists and scroll to bottom on load
     setTimeout(() => {
         ensureScrollAnchor();
@@ -2145,18 +2626,7 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 
 // Also scroll when switching to chat view
-const originalShowView = window.showView;
-if (typeof originalShowView === 'function') {
-    window.showView = function (viewName) {
-        originalShowView(viewName);
-        if (viewName === 'chat') {
-            setTimeout(() => {
-                ensureScrollAnchor();
-                scrollToBottom();
-            }, 100);
-        }
-    };
-}
+// (Moved logic to DOMContentLoaded)
 
 // ==========================================
 // AGENTIC UI HANDLERS (Phase 1.2)
@@ -2265,6 +2735,25 @@ async function handleActionDecision(actionId, cardId, decision) {
     }
 }
 
+function toggleDeepSearch() {
+    isDeepSearchEnabled = !isDeepSearchEnabled;
+    const btn = document.getElementById('deep-search-btn');
+    if (btn) {
+        if (isDeepSearchEnabled) {
+            btn.style.opacity = '1';
+            btn.style.boxShadow = '0 0 10px var(--accent-color)';
+            btn.style.background = 'rgba(255,255,255,0.1)';
+            showToast('Deep Search Enabled', 'info');
+        } else {
+            btn.style.opacity = '0.5';
+            btn.style.boxShadow = 'none';
+            btn.style.background = 'none';
+            showToast('Deep Search Disabled', 'info');
+        }
+    }
+}
+
+
 // Initialize Bulk Delete Button Listener
 // (Removed in favor of inline onclick for reliability)
 // document.addEventListener('DOMContentLoaded', () => {
@@ -2281,11 +2770,87 @@ window.loadSessions = loadSessions;
 window.checkHealth = checkHealth;
 window.newChat = newChat;
 window.sendMessage = sendMessage;
-window.showView = showView;
+// window.showView // Handled by legacy.js
 window.toggleSessionPin = toggleSessionPin;
 window.deleteSession = deleteSession;
 window.switchSession = switchSession;
+window.toggleDeepSearch = toggleDeepSearch;
 window.showSessionContextMenu = showSessionContextMenu;
 window.showToast = showToast;
 window.loadStats = loadStats;
-window.loadFiles = loadFiles;
+window.toggleCompactMode = toggleCompactMode;
+window.toggleCompactMode = toggleCompactMode;
+window.generateExtensionToken = generateExtensionToken;
+// window.loadFiles // Handled by modules.js
+
+// ============== INITIALIZATION ==============
+document.addEventListener('DOMContentLoaded', async () => {
+    console.log("Onyx RAG Agent Initializing (v31)...");
+
+    // 1. Check Backend Health & Ollama Status (Call directly)
+    await checkHealth();
+
+    // 1.5 Load Client Settings (Theme, Compact Mode)
+    loadClientSettings();
+
+    // 2. Load Settings (Populate UI)
+    if (typeof loadSettings === 'function') await loadSettings();
+
+    // 3. Load Sessions (Chat History)
+    if (typeof loadSessions === 'function') await loadSessions();
+
+    // Ensure empty state if no session logic (Consistent with New Chat)
+    if (!currentSessionId && typeof toggleEmptyState === 'function') {
+        toggleEmptyState(true);
+    }
+
+    // 4. Load Stats
+    if (typeof loadStats === 'function') loadStats();
+
+    // 5. Initial File Load (if view is active)
+    if (typeof loadFiles === 'function') loadFiles();
+
+    // 6. Polling for Status
+    setInterval(() => {
+        if (typeof checkHealth === 'function') checkHealth();
+    }, 15000); // Poll every 15s for better responsiveness
+
+});
+
+// 7. Settings View Layout Fix (Independent Wrapper)
+document.addEventListener('DOMContentLoaded', () => {
+    // Poll for window.showView availability
+    const initShowViewWrapper = () => {
+        if (typeof window.showView === 'function') {
+            const originalRefShowView = window.showView;
+            if (originalRefShowView._isWrapped) return true;
+
+            window.showView = function (viewName) {
+                originalRefShowView(viewName);
+
+                const mainContent = document.querySelector('.main-content');
+                if (mainContent) {
+                    if (viewName === 'settings') mainContent.classList.add('no-padding-bottom');
+                    else mainContent.classList.remove('no-padding-bottom');
+                }
+
+                if (viewName === 'chat') {
+                    setTimeout(() => {
+                        if (typeof ensureScrollAnchor === 'function') ensureScrollAnchor();
+                        if (typeof scrollToBottom === 'function') scrollToBottom();
+                    }, 100);
+                }
+            };
+            window.showView._isWrapped = true;
+            return true;
+        }
+        return false;
+    };
+
+    if (!initShowViewWrapper()) {
+        const wrapperInterval = setInterval(() => {
+            if (initShowViewWrapper()) clearInterval(wrapperInterval);
+        }, 50);
+        setTimeout(() => clearInterval(wrapperInterval), 5000);
+    }
+});

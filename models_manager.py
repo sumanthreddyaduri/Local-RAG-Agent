@@ -26,7 +26,7 @@ def list_models(host="http://localhost:11434"):
                     "modified": m.get("modified_at", "")
                 })
             return models
-    except:
+    except Exception:
         # Fallback to CLI
         pass
 

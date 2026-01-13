@@ -1,32 +1,80 @@
+# ============================================
+# RAG Agent .gitignore - Track Only App Files
+# ============================================
+
 # Python
 venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
 
-# Data & Indexes
+# Data & Indexes (User-generated data)
 faiss_index/
 uploaded_files/
 bm25_index.pkl
 *.db
+*.sqlite3
+config.json
 
-# Environment & Config
+# Log files
+logs/
+*.log
+
+# Environment & Secrets
 .env
+.env.local
+.env.*.local
 
 # System Files
 .DS_Store
-*.log
+Thumbs.db
+*.swp
+*.swo
+*~
 
-# Documentation (internal)
-docs/
+# IDE / Editor
+.idea/
+.vscode/
+*.sublime-workspace
+*.sublime-project
 
-# Tests
+# Browser/CLI state files (runtime)
+.browser_opened
+.cli_opened
+.setup_done
+pids.txt
+
+# Test files (not needed in production)
 tests/
 test_*.py
 test_*.png
+test_*.jpg
+*_test.py
 
-# Browser state files
-.browser_opened
+# Development/Debug utilities
+debug_server.py
+inspect_index.py
+verify_pin.py
+reingest.py
+generate_icons.py
+startup_error.log
 
-# Setup scripts (already documented in README)
+# Documentation (internal/redundant)
+docs/
+OPTIMIZATION_SUMMARY.txt
+PERFORMANCE_IMPROVEMENTS.md
+
+# Setup scripts (already documented)
 setup-path.bat
 
+# Playwright MCP output
+.playwright-mcp/
+
+# Docker (if not needed in repo)
+# Dockerfile
+# docker-compose.yml

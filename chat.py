@@ -10,8 +10,10 @@ from backend import get_rag_chain
 from config_manager import load_config
 from database import (
     get_or_create_default_session, add_message, 
-    format_history_for_prompt, create_session
+    format_history_for_prompt, create_session,
+    get_recent_messages, get_new_messages # Added imports
 )
+
 from health_check import check_ollama_health
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
@@ -77,98 +79,143 @@ def main():
     current_model = config.get("model", "gemma3:270m")
     last_mode = "cli"
     
+    # Initialize Last Message ID
+    initial_msgs = get_recent_messages(session_id, 1)
+    last_message_id = initial_msgs[-1]['id'] if initial_msgs else 0
+
     # Window Management Helper
     def set_window_visibility(visible):
-        if sys.platform == 'win32':
-            import ctypes
-            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
-            if hwnd:
-                # SW_HIDE = 0, SW_SHOW = 5
-                ctypes.windll.user32.ShowWindow(hwnd, 5 if visible else 0)
+        if sys.platform != 'win32':
+            return
+        import ctypes
+        from ctypes import wintypes
+        
+        EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        GetWindowText = ctypes.windll.user32.GetWindowTextW
+        GetWindowTextLength = ctypes.windll.user32.GetWindowTextLengthW
+        IsWindowVisible = ctypes.windll.user32.IsWindowVisible
+        
+        target_hwnd = None
+        
+        def foreach_window(hwnd, lParam):
+            nonlocal target_hwnd
+            if not IsWindowVisible(hwnd): return True
+            length = GetWindowTextLength(hwnd)
+            buff = ctypes.create_unicode_buffer(length + 1)
+            GetWindowText(hwnd, buff, length + 1)
+            title = buff.value
+            if "onyx cli" in title.lower():
+                target_hwnd = hwnd
+                return False 
+            return True
+            
+        console_hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if console_hwnd and IsWindowVisible(console_hwnd):
+             length = GetWindowTextLength(console_hwnd)
+             buff = ctypes.create_unicode_buffer(length + 1)
+             GetWindowText(console_hwnd, buff, length + 1)
+             if "onyx" in buff.value.lower():
+                 target_hwnd = console_hwnd
+        
+        if not target_hwnd:
+            ctypes.windll.user32.EnumWindows(EnumWindowsProc(foreach_window), 0)
+            
+        if target_hwnd:
+            cmd = 0 if not visible else 9 
+            ctypes.windll.user32.ShowWindow(target_hwnd, cmd)
 
     print("Type 'help' for commands, 'exit' to quit.\n")
     
-    # Initial history load
-    print("Loading conversation history...")
-    history_text = format_history_for_prompt(session_id, 10) # Pre-fetch to warm up
+    history_text = format_history_for_prompt(session_id, 10) 
+    last_poll_time = time.time()
 
     while True:
         try:
-            # Reload config to check for updates
             config = load_config()
             new_model = config.get("model", "gemma3:270m")
             mode = config.get("mode", "cli")
             max_history = config.get("max_history_context", 10)
             
-            # Handle Mode Switching
             if mode == "browser":
                 if last_mode != "browser":
                     print("\n⏸️  [Browser Mode Active - CLI Chat Hidden]")
                     last_mode = "browser"
-                    set_window_visibility(False) # Hide window
+                    set_window_visibility(False)
                 time.sleep(1)
                 continue
             elif mode == "cli" and last_mode == "browser":
-                set_window_visibility(True) # Show window
+                set_window_visibility(True)
                 print("\n▶️  [CLI Mode Reactivated]")
-                # Refresh history on reactivation
                 history_text = format_history_for_prompt(session_id, max_history)
+                recents = get_recent_messages(session_id, 1)
+                if recents: last_message_id = recents[-1]['id']
                 last_mode = "cli"
+                print("\n🤖 Agent >> ", end="", flush=True)
 
-            # Handle model switching notification
             if new_model != current_model:
                 model_name = new_model.split(':')[0].title()
                 print(f"\n🔄 Model switched to {model_name}")
                 current_model = new_model
             
-            # Get user input
             try:
+                line = ""  # Ensure line is initialized
                 if sys.platform == 'win32':
-                    # Windows: Use msvcrt for non-blocking mode detection
                     import msvcrt
-                    
-                    sys.stdout.write("\r🤖 Agent >> ")
+                    sys.stdout.write("\r🤖 Agent >> " + line)
                     sys.stdout.flush()
                     
-                    line = ""
                     while True:
                         if msvcrt.kbhit():
                             ch = msvcrt.getwche()
                             if ch == '\r' or ch == '\n':
                                 print()
                                 break
-                            elif ch == '\b':  # Backspace
+                            elif ch == '\b':
                                 if len(line) > 0:
                                     line = line[:-1]
                                     sys.stdout.write(' \b')
-                            elif ch == '\x03':  # Ctrl+C
+                            elif ch == '\x03':
                                 raise KeyboardInterrupt
                             else:
                                 line += ch
                         else:
                             time.sleep(0.1)
-                            # Check for mode switch using cached config
+                            
+                            if time.time() - last_poll_time > 2.0:
+                                last_poll_time = time.time()
+                                try:
+                                    # Use a separate session/connection-safe call if needed
+                                    new_msgs = get_new_messages(session_id, last_message_id)
+                                    if new_msgs:
+                                        sys.stdout.write('\r' + ' ' * (len(line) + 20) + '\r')
+                                        for msg in new_msgs:
+                                            if msg['id'] > last_message_id:
+                                                last_message_id = msg['id']
+                                                role = "User" if msg['role'] == 'user' else "Assistant"
+                                                print(f"\n{role}: {msg['content']}")
+                                        
+                                        sys.stdout.write("\n🤖 Agent >> " + line)
+                                        sys.stdout.flush()
+                                        history_text = format_history_for_prompt(session_id, max_history)
+                                except Exception:
+                                    pass
+
                             temp_config = load_config()
                             if temp_config.get("mode") == "browser":
                                 break
                     
                     if config.get("mode") == "browser":
                         continue
-                    
                     query = line.strip()
                 else:
-                    # Unix: Simple input
                     query = input("\n🤖 Agent >> ").strip()
                     
             except EOFError:
                 break
             
-            # Handle commands
-            if not query:
-                continue
+            if not query: continue
             
             query_lower = query.lower()
-            
             if query_lower in ["exit", "quit", "q"]:
                 print("\n👋 Goodbye!")
                 break
@@ -191,12 +238,16 @@ def main():
             if query_lower == "new":
                 session_id = create_session("CLI Session")
                 print("\n✨ New chat session started!")
+                # Reset last_message_id for new session
+                last_message_id = 0 
                 continue
             
             if query_lower == "clear":
                 from database import clear_session_messages
                 clear_session_messages(session_id)
                 print("\n🗑️  Chat history cleared!")
+                # Reset last_message_id after clearing
+                last_message_id = 0
                 continue
 
             # Build and execute the RAG chain
@@ -261,6 +312,11 @@ Provide a helpful response based on the documents."""
                 # Save to database
                 add_message(session_id, 'user', query)
                 add_message(session_id, 'assistant', full_response)
+                
+                # Update last_message_id after adding our own messages
+                # This prevents us from re-printing our own messages if polling happens instantly
+                recents = get_recent_messages(session_id, 1)
+                if recents: last_message_id = recents[-1]['id']
                 
             except Exception as e:
                 print(f"\n\n❌ Error generating response: {e}")

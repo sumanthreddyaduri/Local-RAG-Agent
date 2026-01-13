@@ -13,7 +13,8 @@ import json
 import traceback
 import base64
 from datetime import datetime
-from backend import ingest_files, get_rag_chain, clear_index, get_indexed_files, get_index_stats, load_document_content
+from flask_cors import CORS
+from backend import ingest_files, get_rag_chain, clear_index, get_indexed_files, get_index_stats, load_document_content, deep_search
 from config_manager import load_config, save_config, update_config, DEFAULT_CONFIG, validate_config
 from database import (
     get_or_create_default_session, create_session, get_all_sessions,
@@ -21,7 +22,8 @@ from database import (
     delete_session, rename_session, clear_session_messages,
     toggle_pin_session, get_pinned_sessions,
     create_prompt, get_all_prompts, delete_prompt, search_chat_data,
-    get_total_message_count
+    get_total_message_count,
+    get_all_file_tags, set_file_tags, get_file_tags
 )
 
 from health_check import check_ollama_health, check_model_available, get_system_status
@@ -44,6 +46,8 @@ from logging_config import setup_logging
 logger = setup_logging()
 
 app = Flask(__name__)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
+APP_VERSION = "2.0.0.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploaded_files")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -97,6 +101,57 @@ def get_current_session():
 
 # ... (lines 55-585 preserved) ...
 
+@app.route("/api/files", methods=["GET"])
+def list_files():
+    """List uploaded files."""
+    files = []
+    if os.path.exists(UPLOAD_DIR):
+        for f in os.listdir(UPLOAD_DIR):
+            path = os.path.join(UPLOAD_DIR, f)
+            if os.path.isfile(path):
+                try:
+                    stats = os.stat(path)
+                    files.append({
+                        "name": f,
+                        "size": stats.st_size,
+                        "created": datetime.fromtimestamp(stats.st_ctime).strftime('%Y-%m-%d %H:%M:%S'),
+                         "modified": datetime.fromtimestamp(stats.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+                    })
+                except Exception:
+                    continue
+    
+    # Get tags for all files
+    all_tags = get_all_file_tags()
+    
+    # Merge tags into file list
+    for file in files:
+        file['tags'] = all_tags.get(file['name'], [])
+    
+    # Sort by modified date descending (newest first)
+    files.sort(key=lambda x: x['modified'], reverse=True)
+    
+    return jsonify({"files": files})
+
+
+@app.route("/api/files/<path:filename>/tags", methods=["POST", "DELETE"])
+def update_file_tags(filename):
+    """Update tags for a file."""
+    # SECURITY: Check path
+    if not is_safe_path(filename):
+        return jsonify({"error": "Invalid filename"}), 400
+        
+    if request.method == "POST":
+        data = request.json
+        tags = data.get("tags", [])
+        if not isinstance(tags, list):
+            return jsonify({"error": "Tags must be a list"}), 400
+            
+        success = set_file_tags(filename, tags)
+        return jsonify({"status": "success" if success else "error"})
+        
+    return jsonify({"error": "Method not allowed"}), 405
+
+
 @app.route("/upload", methods=["POST"])
 def upload():
     """Upload and ingest documents into the knowledge base."""
@@ -143,10 +198,46 @@ def new_session():
     return jsonify({"status": "success", "session_id": session_id})
 
 
+@app.route("/api/search", methods=["GET"])
+def api_search():
+    """Search chat sessions, messages, and files."""
+    from database import search_chat_data
+    
+    query = request.args.get("q", "").strip()
+    if not query:
+        return jsonify({"error": "Search query required", "sessions": [], "messages": [], "files": []}), 400
+    
+    results = search_chat_data(query)
+    
+    # Also search files
+    matching_files = []
+    try:
+        for filename in os.listdir(UPLOAD_DIR):
+            if query.lower() in filename.lower():
+                matching_files.append(filename)
+    except Exception:
+        pass
+    
+    return jsonify({
+        "query": query,
+        "sessions": results.get("sessions", []),
+        "messages": results.get("messages", []),
+        "files": matching_files,
+        "total": len(results.get("sessions", [])) + len(results.get("messages", [])) + len(matching_files)
+    })
+
+
 @app.route("/api/sessions/<int:session_id>", methods=["GET"])
 def get_session_messages(session_id):
-    """Get all messages for a specific session."""
-    messages = get_messages(session_id)
+    """Get messages for a specific session (optional polling with after_id)."""
+    after_id = request.args.get('after_id', type=int)
+    
+    if after_id is not None:
+        from database import get_new_messages
+        messages = get_new_messages(session_id, after_id)
+    else:
+        messages = get_messages(session_id)
+        
     return jsonify({"session_id": session_id, "messages": messages})
 
 
@@ -162,6 +253,60 @@ def switch_session(session_id):
     
     messages = get_messages(session_id)
     return jsonify({"status": "success", "session_id": session_id, "messages": messages})
+
+
+@app.route("/api/sessions/<int:session_id>/export", methods=["GET"])
+def export_session(session_id):
+    """Export a chat session as JSON or Markdown."""
+    from database import get_session
+    
+    export_format = request.args.get("format", "json").lower()
+    
+    session = get_session(session_id)
+    if not session:
+        return jsonify({"error": "Session not found"}), 404
+    
+    messages = get_messages(session_id)
+    
+    if export_format == "md" or export_format == "markdown":
+        # Markdown format
+        session_name = session.get('name', session.get('title', 'Chat Session'))
+        md_content = f"# {session_name}\n\n"
+        md_content += f"*Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n\n---\n\n"
+        
+        for msg in messages:
+            role = msg.get("role", "unknown").upper()
+            content = msg.get("content", "")
+            timestamp = msg.get("created_at", "")
+            md_content += f"### {role}\n*{timestamp}*\n\n{content}\n\n---\n\n"
+        
+        response = Response(md_content, mimetype="text/markdown")
+        filename = f"chat_{session_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+        return response
+    
+    else:
+        # JSON format (default)
+        export_data = {
+            "session": session,
+            "messages": messages,
+            "exported_at": datetime.now().isoformat(),
+            "version": APP_VERSION
+        }
+        response = jsonify(export_data)
+        filename = f"chat_{session_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+        return response
+
+
+@app.route("/api/sessions/<int:session_id>/pin", methods=["POST"])
+def toggle_session_pin_route(session_id):
+    """Toggle pin status for a session."""
+    from database import toggle_chat_pin
+    new_status = toggle_chat_pin(session_id)
+    if new_status is None:
+        return jsonify({"error": "Session not found"}), 404
+    return jsonify({"status": "success", "is_pinned": new_status})
 
 
 @app.route("/api/sessions/<int:session_id>", methods=["DELETE"])
@@ -563,19 +708,52 @@ def chat():
                 # We use a dedicated instance for vision to ensure capacity
                 vision_llm = ChatOllama(model="moondream", base_url=config.get("ollama_host", "http://localhost:11434"))
                 
+                # Construct Multimodal Message (Modern LangChain/Ollama Format)
+                content_parts = [
+                    {"type": "text", "text": "Describe this image. List prominent colors, objects, and any text visible."}
+                ]
+                
+                for img_file in images:
+                    # Use full data URL (with header) for LangChain
+                    # If data is raw base64 (no header), ad-hoc allow it, but frontend sends Data URL.
+                    img_data_full = img_file.get("data", "")
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": img_data_full}
+                    })
+
                 vision_messages = [
-                    HumanMessage(
-                        content="Describe this image. List prominent colors, objects, and any text visible.", 
-                        additional_kwargs={"images": cleaned_images}
-                    )
+                    HumanMessage(content=content_parts)
                 ]
                 
                 # Get Description
                 vision_response = vision_llm.invoke(vision_messages)
                 description = vision_response.content
-                print(f"[DEBUG] Vision AI Description: {description[:100]}...", flush=True)
+                print(f"[DEBUG] Vision AI FULL Description: '{description}'", flush=True)
                 
-                vision_context = f"\n\n[HIDDEN CONTEXT FROM VISION AI]\nThe user has attached images. Here is the internal description of those images:\n{description}\n(The user cannot see this description directly. Use it to answer their questions about the image.)\n"
+                # Detect if moondream refused to process the image
+                refusal_patterns = [
+                    "i don't have access",
+                    "i can't view",
+                    "i'm sorry, but i can't",
+                    "i cannot assist with that",
+                    "i'm unable to view",
+                    "i'm unable to see",
+                    "unfortunately, i don't have access"
+                ]
+                description_lower = description.lower().strip()
+                
+                # Check for empty or very short responses (also a sign of refusal)
+                is_empty_or_short = len(description.strip()) < 10
+                is_refusal = any(pattern in description_lower for pattern in refusal_patterns) or is_empty_or_short
+                
+                print(f"[DEBUG] Refusal detected: {is_refusal} (empty={is_empty_or_short}, len={len(description)})", flush=True)
+                
+                if is_refusal:
+                    # moondream refused - provide helpful feedback
+                    vision_context = f"\n\n[VISION SYSTEM LIMITATION]\nThe vision model (moondream) was unable to process the uploaded image. This typically happens with:\n- Large images (>1MB)\n- High-resolution photos with complex scenes\n- Images with heavy compression artifacts\n\nSUGGESTIONS:\n1. Try resizing/compressing the image before upload\n2. Use a more capable vision model like 'llava:latest' or 'minicpm-v' (available via Settings > Model)\n3. Simplify the image (crop to focus on specific area)\n\nFor now, respond to the user's query acknowledging you cannot analyze this specific image, and ask them to try the suggestions above.\n"
+                else:
+                    vision_context = f"\n\n[HIDDEN CONTEXT FROM VISION AI]\nThe user has attached images. Here is the internal description of those images:\n{description}\n(The user cannot see this description directly. Use it to answer their questions about the image.)\n"
                 
             except Exception as e:
                 print(f"[ERROR] Vision processing failed: {e}", flush=True)
@@ -669,7 +847,12 @@ Conversation History:
             # Add RAG Context if available
             if retriever:
                  try:
-                    docs = retriever.invoke(query)
+                    if use_deep_search:
+                         print(f"PERFORMING DEEP SEARCH for: {query}")
+                         docs = deep_search(query, retriever, llm)
+                    else:
+                         docs = retriever.invoke(query)
+                         
                     if docs:
                         context_str = format_docs(docs)
                         system_prompt += f"\n\nRELEVANT DOCUMENT CONTEXT:\n{context_str}\n"
@@ -787,33 +970,26 @@ Conversation History:
                         full_response.append(fallback)
                         yield fallback
 
-                # Save to DB with actual response content
-                # Append attachment info to metadata
-                file_meta = []
-                if files:
-                    file_meta = [{"name": f.get("name"), "type": f.get("type", "document"), "path": f"/uploaded_files/{f.get('name')}"} for f in files]
-                
-                # Keep text fallback for searchability, but rely on metadata for UI
-                user_msg_to_save = query
-                
-                add_message(session_id, 'user', user_msg_to_save, metadata={"files": file_meta})
-                
-                final_response = "".join(full_response) if full_response else "[No response generated]"
-                add_message(session_id, 'assistant', final_response[:2000])  # Truncate if too long
-
             except Exception as e:
                 traceback.print_exc()
                 error_msg = f"\n\n[Error: {str(e)}]"
+                full_response.append(error_msg)
                 yield error_msg
-                
-                # Append attachment info to history on error too
-                user_msg_to_save = query
-                if files:
-                    file_names = [f.get("name", "unknown") for f in files]
-                    user_msg_to_save += "\n\n" + "\n".join([f"[Attached: {name}]" for name in file_names])
+            
+            finally:
+                # ALWAYS save assistant response at end of generator (runs on completion or error)
+                final_response = "".join(full_response) if full_response else "[No response generated]"
+                add_message(session_id, 'assistant', final_response[:2000])  # Truncate if too long
 
-                add_message(session_id, 'user', user_msg_to_save)
-                add_message(session_id, 'assistant', error_msg)
+        # ========================================
+        # SAVE USER MESSAGE IMMEDIATELY (BEFORE STREAMING)
+        # ========================================
+        # This ensures user message is saved even if stream is interrupted
+        file_meta = []
+        if files:
+            file_meta = [{"name": f.get("name"), "type": f.get("type", "document"), "path": f"/uploaded_files/{f.get('name')}"} for f in files]
+        
+        add_message(session_id, 'user', query, metadata={"files": file_meta})
 
         # Return the streaming response
         return Response(generate_agent_stream(), mimetype='text/plain')
@@ -843,14 +1019,17 @@ def clean_pending_actions(ttl=300): # 5 minutes TTL
 @app.route("/api/agent/allow", methods=["POST"])
 def allow_tool():
     """Execute a pending tool call after user approval."""
-    clean_pending_actions() # Clean stale actions on access
-    data = request.json
+    clean_pending_actions() # Clean stale actions    # Parse request
+    data = request.json or {}
     session_id = data.get("session_id")
-    action_id = data.get("action_id")
-    decision = data.get("decision", "deny")
+    query = data.get("message", "")
+    temp_doc_content = data.get("temp_doc_content", None)
+    images = data.get("images", []) # List of {name, data (base64)}
+    use_deep_search = data.get("deep_search", False)
     
-    if not session_id or not action_id:
-        return jsonify({"error": "Missing session_id or action_id"}), 400
+    # Validation
+    if not query and not images:
+        return jsonify({"error": "No message or images provided"}), 400
         
     pending = PENDING_ACTIONS.get(session_id)
     if not pending or pending["id"] != action_id:
@@ -887,47 +1066,6 @@ def allow_tool():
 
 
 
-
-
-@app.route("/")
-def index():
-    """Render the main chat interface."""
-    config = load_config()
-    
-    # Force Start with New Chat (Reset Global State)
-    global CURRENT_SESSION_ID
-    CURRENT_SESSION_ID = None
-    session_id = None
-    
-    # Get all sessions for sidebar and dashboard
-    all_sessions = get_all_sessions()
-    
-    # Get history for current session
-    history = get_messages(session_id)
-    
-    # Get indexed files
-    files = get_indexed_files()
-    
-    # Get available models
-    models = ["gemma3:270m", "llama2", "mistral", "neural-chat"]
-    try:
-        ollama_config = check_ollama_health(config.get("ollama_host"))
-        if ollama_config.get("models"):
-            models = ollama_config["models"]
-    except:
-        pass
-
-    return render_template(
-        "index.html",
-        config=config,
-        sessions=all_sessions,
-        current_session_id=session_id,
-        history=history,
-        files=files,
-        available_models=models,
-        recent_activity=all_sessions[:5], # Pass top 5 recent sessions for dashboard
-        pinned_sessions=get_pinned_sessions() # Pass pinned sessions
-    )
 
 
 @app.route("/set_model", methods=["POST"])
@@ -993,23 +1131,7 @@ def launch_cli():
         subprocess.Popen([sys.executable, "chat.py"])
 
 
-@app.route("/set_mode", methods=["POST"])
-def set_mode():
-    """Toggle between CLI and browser chat modes."""
-    data = request.json
-    mode = data.get("mode")
-    
-    if mode not in ["cli", "browser"]:
-        return jsonify({"error": "Invalid mode"}), 400
-    
-    update_config({"mode": mode})
-    
-    # If switching to CLI, ensure the window is open
-    if mode == "cli":
-        if not is_cli_running():
-            launch_cli()
-            
-    return jsonify({"status": "success", "mode": mode})
+
 
 
 
@@ -1059,6 +1181,77 @@ def api_health():
         return jsonify(status)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/system/ollama/control", methods=["POST"])
+def api_control_ollama():
+    """Control the Ollama service (Start/Restart/Stop)."""
+    data = request.json
+    action = data.get("action")
+    
+    if action not in ["start", "restart", "stop"]:
+        return jsonify({"error": "Invalid action. Use start, restart, or stop"}), 400
+        
+    try:
+        msg = f"Ollama {action} initiated"
+        
+        if action == "stop" or action == "restart":
+            # Windows-specific kill
+            if sys.platform == "win32":
+                subprocess.run("taskkill /IM ollama.exe /F", shell=True, stderr=subprocess.DEVNULL)
+                subprocess.run("taskkill /IM ollama_app.exe /F", shell=True, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.run("pkill -9 ollama", shell=True, stderr=subprocess.DEVNULL)
+            
+            # Wait for cleanup with timeout
+            time.sleep(2) 
+            
+        if action == "start" or action == "restart":
+            # Start Ollama deeply detached
+            if sys.platform == "win32":
+                # Use CREATE_NEW_CONSOLE | DETACHED_PROCESS to run completely independent
+                # This prevents it from being a child that dies with the server or blocks
+                DETACHED_PROCESS = 0x00000008
+                CREATE_NEW_PROCESS_GROUP = 0x00000200
+                subprocess.Popen(
+                    ["ollama", "serve"],
+                    creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                    shell=True, # shell=True needed to find 'ollama' in PATH usually, but Popen with list implies no shell? 
+                    # Actually for shell=True, args should be string. For list, shell=False. 
+                    # Let's use string with shell=True but DETACHED.
+                )
+                # Re-do: Popen(["ollama", "serve"]) with creationflags is safer if in PATH
+                # If 'ollama' is a command, we might need shell=True to find it if it's a batch file/shim? 
+                # Usually ollama.exe is a binary.
+                # Let's try shell=True with "start" to be safe as before, but verify flags.
+                # User reported "Won't work at all". 
+                # Let's try direct execution.
+                subprocess.Popen(
+                    "ollama serve", 
+                    shell=True, 
+                    creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+
+            else:
+                subprocess.Popen(
+                    ["ollama", "serve"],
+                    start_new_session=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            
+            # Brief wait to let it spawn
+            time.sleep(3)
+            
+        return jsonify({"status": "success", "message": msg})
+        
+    except Exception as e:
+        logger.error(f"Error controlling Ollama: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 
 @app.route("/api/settings", methods=["GET"])
@@ -1127,52 +1320,7 @@ def rename_chat_session(session_id):
     return jsonify({"error": "Session not found or rename failed"}), 404
 
 
-@app.route("/api/sessions/<int:session_id>/export", methods=["GET"])
-def export_session(session_id):
-    """Export chat session as a downloadable file."""
-    format_type = request.args.get("format", "txt")
-    
-    # Get session details
-    sessions = get_all_sessions()
-    session_name = "Chat"
-    for s in sessions:
-        if s["id"] == session_id:
-            session_name = s["name"]
-            break
-            
-    # Clean filename
-    safe_name = "".join([c for c in session_name if c.isalnum() or c in (' ', '-', '_')]).strip()
-    safe_name = safe_name.replace(" ", "_")
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    filename = f"{safe_name}_{date_str}.{format_type}"
-    
-    # Get messages
-    messages = get_messages(session_id)
-    
-    # Generate content
-    content = ""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    if format_type == "md":
-        content = f"# {session_name}\n\nExported on {timestamp}\n\n---\n\n"
-        for msg in messages:
-            role = "**You**" if msg["role"] == "user" else "**Assistant**"
-            content += f"{role}:\n\n{msg['content']}\n\n---\n\n"
-        mimetype = "text/markdown"
-    else:
-        content = f"{session_name}\nExported on {timestamp}\n{'='*50}\n\n"
-        for msg in messages:
-            role = "You" if msg["role"] == "user" else "Assistant"
-            content += f"[{role}]:\n{msg['content']}\n\n{'-'*40}\n\n"
-        mimetype = "text/plain"
-        
-    # Return as downloadable file
-    from werkzeug.wrappers import Response
-    return Response(
-        content,
-        mimetype=mimetype,
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
+# export_session REMOVED - using /api/sessions/<id>/export at line 168
 
 
 @app.route("/api/index/stats", methods=["GET"])
@@ -1263,57 +1411,7 @@ def list_indexed_files():
     return jsonify({"files": files, "count": len(files)})
 
 
-@app.route("/api/documents", methods=["GET"])
-def list_documents():
-    """Get list of indexed documents with metadata (frontend compatibility)."""
-    files = get_indexed_files()
-    documents = []
-    
-    for filepath in files:
-        filename = os.path.basename(filepath)
-        stat_info = None
-        
-        # Try to get file stats if file exists
-        if os.path.exists(filepath):
-            stat_info = os.stat(filepath)
-        
-        ext = os.path.splitext(filename)[1].lower()
-        
-        # Determine file type
-        file_type = "document"
-        if ext == ".pdf":
-            file_type = "pdf"
-        elif ext in [".txt", ".md"]:
-            file_type = "text"
-        elif ext in [".doc", ".docx"]:
-            file_type = "word"
-        elif ext in [".csv"]:
-            file_type = "csv"
-        
-        doc_info = {
-            "name": filename,
-            "path": filepath,
-            "extension": ext,
-            "type": file_type,
-            "indexed": True  # All files returned here are indexed
-        }
-        
-        if stat_info:
-            doc_info["size"] = stat_info.st_size
-            doc_info["size_formatted"] = format_file_size(stat_info.st_size)
-            doc_info["modified"] = stat_info.st_mtime
-        else:
-            # File was indexed but no longer exists
-            doc_info["size"] = 0
-            doc_info["size_formatted"] = "N/A"
-            doc_info["modified"] = 0
-            doc_info["missing"] = True
-        
-        documents.append(doc_info)
-    
-    # Sort by name
-    documents.sort(key=lambda x: x["name"])
-    return jsonify({"documents": documents, "count": len(documents)})
+
 
 
 
@@ -1394,7 +1492,17 @@ def not_found(e):
     """Handle 404 errors."""
     if request.path.startswith('/api/'):
         return jsonify({"error": "Endpoint not found"}), 404
-    return render_template("index.html", config=load_config(), message="Page not found", status="error")
+    
+    # Defaults
+    defaults = {"current_session_id": None, "mode": "browser", "sessions": [], "models": [], "history": []}
+    try:
+        config = load_config()
+        defaults["mode"] = config.get("mode", "browser")
+        defaults["config"] = config
+    except:
+        defaults["config"] = {}
+
+    return render_template("index.html", **defaults, message="Page not found", status="error")
 
 
 @app.errorhandler(500)
@@ -1403,7 +1511,17 @@ def server_error(e):
     traceback.print_exc()
     if request.path.startswith('/api/'):
         return jsonify({"error": "Internal server error"}), 500
-    return render_template("index.html", config=load_config(), message="Server error occurred", status="error")
+        
+    # Defaults
+    defaults = {"current_session_id": None, "mode": "browser", "sessions": [], "models": [], "history": []}
+    try:
+        config = load_config()
+        defaults["mode"] = config.get("mode", "browser")
+        defaults["config"] = config
+    except:
+        defaults["config"] = {}
+        
+    return render_template("index.html", **defaults, message="Server error occurred", status="error")
 
 
 # ------------------------------------------------------------------
@@ -1460,6 +1578,144 @@ def delete_prompt_endpoint(prompt_id):
     success = delete_prompt(prompt_id)
     return jsonify({"success": success})
 
+# ------------------------------------------------------------------
+# API: Configuration & Settings
+# ------------------------------------------------------------------
+@app.route("/api/settings", methods=["GET", "POST"])
+def api_settings():
+    """Get or update application settings."""
+    if request.method == "POST":
+        try:
+            data = request.json or {}
+            update_config(data)
+            return jsonify({"status": "success", "message": "Settings updated"})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    else:
+        try:
+            config = load_config()
+            return jsonify(config)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+
+def start_cli():
+    """Launch the CLI in a new terminal window."""
+    try:
+        cli_script = os.path.join(BASE_DIR, "chat.py")
+        CLI_LOCK = os.path.join(BASE_DIR, ".cli_opened")
+        
+        # 1. Attempt Atomic Lock Acquisition
+        try:
+            # 'x' mode creates file, failing if it exists (Atomic)
+            with open(CLI_LOCK, 'x') as f:
+                f.write(str(time.time()))
+            # Lock acquired -> Launch
+            logger.info("CLI lock acquired. Launching...")
+            if sys.platform == "win32":
+                subprocess.Popen(f'start "Onyx CLI" cmd /k "python {cli_script}"', shell=True)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-a", "Terminal", "python", cli_script])
+            else: # Linux
+                subprocess.Popen(["x-terminal-emulator", "-e", "python", cli_script])
+            return
+        except FileExistsError:
+            logger.info("CLI lock exists. verifying...")
+
+        # 2. Check if lock is RECENT (Race condition protection)
+        try:
+            with open(CLI_LOCK, 'r') as f:
+                content = f.read().strip()
+                if content:
+                    timestamp = float(content)
+                    if time.time() - timestamp < 5:
+                        logger.info("CLI lock is recent (< 5s). Assuming startup in progress. skipping.")
+                        return
+        except Exception as e:
+            logger.warning(f"Failed to read lock timestamp: {e}")
+
+        # 3. Verify if process is actually running (Handle stale locks)
+        is_running = False
+        if sys.platform == "win32":
+            try:
+                # Check for window title using tasklist filter
+                check_cmd = 'tasklist /FI "WINDOWTITLE eq Onyx CLI*" /FO CSV /NH'
+                output = subprocess.run(check_cmd, capture_output=True, text=True, shell=True).stdout
+                # Valid process output in CSV contains quotes and commas, e.g. "cmd.exe","1234",...
+                if '","' in output or "WindowsTerminal" in output or "cmd.exe" in output:
+                    is_running = True
+            except:
+                pass
+        
+        if is_running:
+            logger.info("CLI process verified running. Focusing...")
+            if sys.platform == "win32":
+                subprocess.run("powershell -c \"(New-Object -ComObject WScript.Shell).AppActivate('Onyx CLI')\"", shell=True)
+            return
+        else:
+            logger.info("CLI lock found but process not running (stale). Cleaning up and retrying...")
+            try:
+                os.remove(CLI_LOCK)
+                start_cli() # Retry launch
+            except Exception as e:
+                logger.error(f"Error during stale lock cleanup: {e}")
+
+    except Exception as e:
+        logger.error(f"Failed to launch CLI: {e}")
+
+@app.route("/set_mode", methods=["POST"])
+def set_mode():
+    """Set operation mode (CLI or Browser)."""
+    try:
+        data = request.json
+        mode = data.get("mode")
+        if mode not in ["cli", "browser"]:
+            return jsonify({"error": "Invalid mode"}), 400
+            
+        # Update and save config
+        update_config({"mode": mode})
+        
+        # Launch CLI if requested
+        if mode == "cli":
+            start_cli()
+            
+        return jsonify({"status": "success", "mode": mode})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+
+
+
+@app.route("/")
+def index():
+    """Render the main chat interface."""
+    config = load_config()
+    
+    # Get all sessions
+    all_sessions = get_all_sessions()
+    
+    history = []
+    
+    # Get available models
+    models = ["gemma3:270m", "llama2", "mistral", "neural-chat"]
+    try:
+        health = check_ollama_health(config.get("ollama_host"))
+        if health["available"]:
+             online_models = list_models(config.get("ollama_host"))
+             if online_models:
+                 models = online_models
+    except:
+        pass
+
+    return render_template("index.html", 
+                         sessions=all_sessions,
+                         current_session_id=None,
+                         history=history,
+                         models=models,
+                         mode=config.get("mode", "cli"))
+
 
 # ------------------------------------------------------------------
 # API: Global Search
@@ -1488,15 +1744,6 @@ def global_search():
     })
 
 
-@app.route("/api/graph", methods=["GET"])
-def get_graph_data():
-    """Get knowledge graph data."""
-    try:
-        from backend import get_knowledge_graph
-        graph = get_knowledge_graph()
-        return jsonify(graph)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
@@ -1512,4 +1759,4 @@ if __name__ == "__main__":
     logger.info(f"{'='*50}")
     
     # Production run (default)
-    app.run(host='127.0.0.1', port=8501, debug=False)
+    app.run(host='127.0.0.1', port=8501, debug=True)

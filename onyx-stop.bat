@@ -7,6 +7,8 @@ echo Stopping Onyx...
 REM Find and kill Python processes running start_app.py
 for /f "tokens=2" %%a in ('tasklist /FI "IMAGENAME eq python.exe" /FO LIST ^| findstr "PID"') do (
     wmic process where "ProcessId=%%a and CommandLine like '%%start_app.py%%'" delete >nul 2>&1
+    wmic process where "ProcessId=%%a and CommandLine like '%%app.py%%'" delete >nul 2>&1
+    wmic process where "ProcessId=%%a and CommandLine like '%%chat.py%%'" delete >nul 2>&1
 )
 
 echo Onyx stopped.

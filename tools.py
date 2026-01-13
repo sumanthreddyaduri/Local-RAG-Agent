@@ -2,7 +2,7 @@ import os
 import json
 import logging
 from security import SAFE_ROOT, is_safe_path
-from backend import ingest_files, clear_index
+from backend import ingest_files
 
 logger = logging.getLogger(__name__)
 

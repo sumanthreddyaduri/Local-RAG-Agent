@@ -7,12 +7,9 @@ from typing import Dict, Any, Optional
 import time
 
 
-def check_ollama_health(host: str = "http://localhost:11434", timeout: int = 5) -> Dict[str, Any]:
+def check_ollama_health(host: str = "http://localhost:11434", timeout: int = 2) -> Dict[str, Any]:
     """
     Check if Ollama is running and responsive.
-    
-    Returns:
-        Dict with status, available models, and any error messages.
     """
     result = {
         "status": "unknown",
@@ -53,12 +50,9 @@ def check_ollama_health(host: str = "http://localhost:11434", timeout: int = 5) 
     return result
 
 
-def check_model_available(model_name: str, host: str = "http://localhost:11434") -> Dict[str, Any]:
+def check_model_available(model_name: str, host: str = "http://localhost:11434", known_health: Dict = None) -> Dict[str, Any]:
     """
     Check if a specific model is available in Ollama.
-    
-    Returns:
-        Dict with availability status and model info.
     """
     result = {
         "model": model_name,
@@ -66,7 +60,8 @@ def check_model_available(model_name: str, host: str = "http://localhost:11434")
         "error": None
     }
     
-    health = check_ollama_health(host)
+    # Use known health status if provided, otherwise check
+    health = known_health if known_health else check_ollama_health(host)
     
     if not health["available"]:
         result["error"] = health["error"]
@@ -91,9 +86,6 @@ def check_model_available(model_name: str, host: str = "http://localhost:11434")
 def pull_model(model_name: str, host: str = "http://localhost:11434") -> Dict[str, Any]:
     """
     Trigger Ollama to pull/download a model.
-    
-    Returns:
-        Dict with status of the pull operation.
     """
     result = {
         "model": model_name,
@@ -124,6 +116,7 @@ def pull_model(model_name: str, host: str = "http://localhost:11434") -> Dict[st
 def get_system_status() -> Dict[str, Any]:
     """
     Get comprehensive system status including all dependencies.
+    Optimized to minimize latency when Ollama is offline.
     """
     from config_manager import load_config
     
@@ -132,12 +125,14 @@ def get_system_status() -> Dict[str, Any]:
     current_model = config.get("model", "gemma3:270m")
     embed_model = config.get("embed_model", "nomic-embed-text")
     
+    # Fetch Ollama status ONCE
     ollama_health = check_ollama_health(ollama_host)
     
     status = {
         "ollama": ollama_health,
-        "current_model": check_model_available(current_model, ollama_host),
-        "embed_model": check_model_available(embed_model, ollama_host),
+        # Pass cached health to avoid redundant 5s timeouts
+        "current_model": check_model_available(current_model, ollama_host, known_health=ollama_health),
+        "embed_model": check_model_available(embed_model, ollama_host, known_health=ollama_health),
         "config_valid": True,
         "db_exists": False,
         "indexed_files": 0

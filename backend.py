@@ -229,6 +229,50 @@ class HybridRetriever:
         return self.get_relevant_documents(query, k=k)
 
 
+def expand_query(original_query: str, llm: ChatOllama) -> List[str]:
+    """Generate search variations using the LLM."""
+    try:
+        system = "You are an AI research assistant. Generate 3 diverse search queries based on the user's question to retrieve comprehensive information. Return ONLY the queries, one per line. Do not number them."
+        messages = [
+            SystemMessage(content=system),
+            HumanMessage(content=original_query)
+        ]
+        response = llm.invoke(messages)
+        queries = [q.strip() for q in response.content.split('\n') if q.strip()]
+        return queries[:3] # Limit to top 3 expansions
+    except Exception as e:
+        print(f"Query expansion failed: {e}")
+        return [original_query]
+
+def deep_search(query: str, retriever: Any, llm: ChatOllama) -> List[Document]:
+    """
+    Perform deep search by expanding queries and deduplicating results.
+    """
+    # 1. Expand Query
+    print(f"[Deep Search] Original: {query}")
+    expanded_queries = expand_query(query, llm)
+    print(f"[Deep Search] Variations: {expanded_queries}")
+    
+    # 2. Retrieve for all queries (including original)
+    all_queries = [query] + expanded_queries
+    combined_docs = []
+    seen_sources = set()
+    
+    for q in all_queries:
+        docs = retriever.invoke(q)
+        for doc in docs:
+            # unique ID based on content hash or metadata source
+            # Using content[:100] + source as rudimentary ID
+            source = doc.metadata.get('source', '')
+            content_id = f"{source}_{hash(doc.page_content)}"
+            
+            if content_id not in seen_sources:
+                combined_docs.append(doc)
+                seen_sources.add(content_id)
+    
+    return combined_docs[:8] # Return top 8 unique documents
+
+
 def get_loader(file_path: str):
     """Factory to pick the right loader for the file type."""
     ext = os.path.splitext(file_path)[1].lower()
@@ -465,7 +509,7 @@ def get_rag_chain(model_name: str = None) -> Tuple[Optional[Any], ChatOllama]:
     
     # Return cached retriever if available (and valid - ensured by get_vector_store clearing it)
     if _CACHED_RETRIEVER is not None:
-        print(f"✓ Using cached retriever (cache hit)")
+        print(f"[CACHE] Using cached retriever (cache hit)")
         return _CACHED_RETRIEVER, llm
     
     try:

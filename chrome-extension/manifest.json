@@ -1,26 +1,26 @@
 {
     "manifest_version": 3,
-    "name": "Local RAG Agent",
-    "version": "1.0.0",
-    "description": "Syncs browser tab content with your Local RAG Agent for context-aware AI responses",
+    "name": "Onyx Browser Agent",
+    "version": "1.0",
+    "description": "Your Local Browser Agent. Connects to Onyx RAG.",
     "permissions": [
+        "sidePanel",
         "activeTab",
-        "scripting"
+        "scripting",
+        "storage"
     ],
     "host_permissions": [
         "http://127.0.0.1:8501/*",
         "http://localhost:8501/*"
     ],
-    "action": {
-        "default_popup": "popup.html",
-        "default_icon": {
-            "16": "icons/icon16.png",
-            "48": "icons/icon48.png",
-            "128": "icons/icon128.png"
-        }
-    },
     "background": {
-        "service_worker": "background.js"
+        "service_worker": "src/background.js"
+    },
+    "side_panel": {
+        "default_path": "src/sidepanel.html"
+    },
+    "action": {
+        "default_title": "Open Onyx Side Panel"
     },
     "icons": {
         "16": "icons/icon16.png",

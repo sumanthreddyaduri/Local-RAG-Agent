@@ -5,8 +5,12 @@ All notable changes to the **Onyx** (Local RAG Agent) project will be documented
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - v2.1.0-dev
+## [2.1.0] - "Shadow" - 2026-01-06
 ### Added
+- **Theme Customization**: Full Dark/Light/Auto theme support with persistent settings.
+- **Accent Colors**: 5 user-selectable brand colors (Indigo, Emerald, Amber, Pink, Blue).
+- **Desktop Notifications**: System-level notifications for app events with auto-close logic.
+- **Settings Persistence**: Comprehensive saving of all user preferences (theme, notification duration, model config).
 - **Async Processing**: File uploads now process in background (`/api/tasks/<id>` polling).
 - **Logging**: Structured JSON/Text logging to `logs/app.log` with rotation.
 - **Security**: 
@@ -14,13 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - TTL-based cleanup for Pending Tool Approvals.
 
 ### Changed
+- **UI Polish**: Removed hardcoded dark styles from Light Mode (Inputs, History, Cards).
 - **Knowledge Graph**: Implemented Degree Centrality filtering to reduce visual clutter.
 - **API**: `/api/files/ingest` now returns `202 Accepted` (Async) or `207 Multi-Status` (Partial).
 
 ### Fixed
+- **Notifications**: Fixed broken Desktop Notifications and `notification_duration` setting.
+- **Access Control**: Fixed `setAccentColor` reference error.
 - **Security**: Hardened file path validation in `tools.py` (Path Traversal fix).
 - **Stability**: Fixed `ChatOllama` missing import and duplicate `PIL` imports.
 - **Critical**: Fixed `BM25Index` load crash on legacy archives.
+- **CLI Mode**: Implemented singleton process management (Windows) to prevent multiple terminal windows.
+- **Dev**: Enabled `debug=True` in `app.py` for auto-reloading during development.
 
 ---
 

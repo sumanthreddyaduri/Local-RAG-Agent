@@ -31,36 +31,38 @@
 
 ---
 
-## 📋 v2.1 - "Shadow" (Planned - Q1 2026)
+## ✅ v2.1 - "Shadow" (Completed - Jan 2026)
 
-**Theme**: Enhanced productivity and data management
+**Theme**: Turn-key customization and core management features
 
-### Planned Features
-- [ ] **Chat Organization**
-  - Folders/tags for chat sessions
-  - Pin important conversations
-  - Search within chat history
-  - Export chat sessions (JSON/Markdown)
+### Features Completed
+- ✅ **Chat Management**
+  - [x] Pin important conversations
+  - [x] Export chat sessions (JSON/Text)
+  - [x] Multi-select operations
 
-- [ ] **Document Management**
-  - File preview improvements
-  - Batch document upload
-  - Document tagging system
-  - Recently accessed files
+- ✅ **Document Management**
+  - [x] Batch document upload (Drag & Drop)
+  - [x] File type icons & basic metadata
 
-- [ ] **Settings & Customization**
-  - Theme customization (dark/light/auto)
-  - Custom color schemes
-  - Font size preferences
-  - Keyboard shortcuts configuration
+- ✅ **Settings & Customization**
+  - [x] Theme customization (dark/light/auto)
+  - [x] Custom color schemes (Accent colors)
+  - [x] Desktop Notifications & System integration
 
 ---
 
-## 📋 v2.2 - "Phantom" (Planned - Q2 2026)
+## 📋 v3.0 - "Phantom" (Planned - Q2 2026)
 
 **Theme**: Advanced features and integrations
 
 ### Planned Features
+- [ ] **Advanced Organization** (Migrated from v2.1)
+  - Folders/tags for chat sessions
+  - Document tagging system
+  - File preview improvements
+  - Search within chat history
+
 - [ ] **Browser Agent Enhancements**
   - **Active Agent**: Headless browser (Playwright) for page interactions
   - **Chat Panel**: In-browser sidebar for direct AI interaction
@@ -82,7 +84,7 @@
 
 ---
 
-## 📋 v3.0 - "Eclipse" (Planned - Q3 2026)
+## 📋 v4.0 - "Eclipse" (Planned - Q3 2026)
 
 **Theme**: Next-generation AI capabilities
 
@@ -121,4 +123,4 @@ All versions follow the "stealth/shadow" theme:
 
 ---
 
-*Last updated: December 25, 2025*
+*Last updated: January 2, 2026*

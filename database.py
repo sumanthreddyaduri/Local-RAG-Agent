@@ -97,6 +97,60 @@ def init_db():
         ''')
 
 
+        # ---------------------------------------------------------
+        # NEW TABLE: Documents (for tagging)
+        # ---------------------------------------------------------
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS documents (
+                filename TEXT PRIMARY KEY,
+                tags TEXT DEFAULT '[]',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+
+def get_file_tags(filename):
+    """Get tags for a specific file."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT tags FROM documents WHERE filename = ?', (filename,))
+        row = cursor.fetchone()
+        if row:
+            try:
+                return json.loads(row['tags'])
+            except:
+                return []
+        return []
+
+def set_file_tags(filename, tags):
+    """Set tags for a file (tags is a list of strings)."""
+    with _lock:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''INSERT INTO documents (filename, tags, updated_at) 
+                   VALUES (?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(filename) DO UPDATE SET 
+                   tags=excluded.tags, 
+                   updated_at=CURRENT_TIMESTAMP''',
+                (filename, json.dumps(tags))
+            )
+            return cursor.rowcount > 0
+
+def get_all_file_tags():
+    """Get all file tags as a dictionary {filename: [tags]}."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT filename, tags FROM documents')
+        result = {}
+        for row in cursor.fetchall():
+            try:
+                result[row['filename']] = json.loads(row['tags'])
+            except:
+                result[row['filename']] = []
+        return result
+
+
 def create_session(name=None, model_used=None):
     """Create a new chat session."""
     if name is None:
@@ -154,6 +208,26 @@ def rename_session(session_id, new_name):
             return cursor.rowcount > 0
 
 
+def toggle_chat_pin(session_id):
+    """Toggle the pinned status of a session."""
+    with _lock:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            # Get current status
+            cursor.execute('SELECT is_pinned FROM chat_sessions WHERE id = ?', (session_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            
+            # Toggle
+            new_status = not bool(row['is_pinned'])
+            cursor.execute(
+                'UPDATE chat_sessions SET is_pinned = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                (new_status, session_id)
+            )
+            return new_status
+
+
 def add_message(session_id, role, content, metadata=None):
     """Add a message to a session."""
     if metadata is None:
@@ -188,6 +262,17 @@ def get_messages(session_id, limit=None):
                 'SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC',
                 (session_id,)
             )
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_new_messages(session_id, last_message_id):
+    """Get messages created after a specific ID (for polling)."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT * FROM chat_messages WHERE session_id = ? AND id > ? ORDER BY created_at ASC',
+            (session_id, last_message_id)
+        )
         return [dict(row) for row in cursor.fetchall()]
 
 

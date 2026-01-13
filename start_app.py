@@ -4,7 +4,6 @@ import webbrowser
 import sys
 import shutil
 import os
-import chat
 
 REQUIRED_MODELS = ["gemma2:2b", "gemma3:270m", "qwen2.5:0.5b", "nomic-embed-text", "moondream"]
 LOCK_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -19,15 +18,15 @@ def check_dependencies():
     force_check = "--force-check" in sys.argv
     
     if os.path.exists(SETUP_MARKER) and not force_check:
-        print("⚡ Skipping dependency check (already satisfied).")
+        print("Skipping dependency check (already satisfied).")
         return
 
-    print("🔍 Checking system dependencies...")
+    print("Checking system dependencies...")
     
     # 1. Check Ollama
     if not shutil.which("ollama"):
-        print("\n❌ Error: Ollama is not installed or not in your PATH.")
-        print("👉 Please download it from https://ollama.com")
+        print("\nError: Ollama is not installed or not in your PATH.")
+        print("Please download it from https://ollama.com")
         print("   If installed, ensure it is added to your system environment variables.")
         input("\nPress Enter to exit...")
         sys.exit(1)
@@ -44,21 +43,21 @@ def check_dependencies():
                 missing_models.append(model)
         
         if missing_models:
-            print(f"\n⚠️  Missing models: {', '.join(missing_models)}")
+            print(f"\nMissing models: {', '.join(missing_models)}")
             print("   Downloading them now (this might take a while)...")
             for model in missing_models:
-                print(f"   ⬇️  Pulling {model}...")
+                print(f"   Pulling {model}...")
                 subprocess.run(["ollama", "pull", model], check=True)
-            print("✅ All models ready!")
+            print("All models ready!")
         
         # Mark setup as done
         with open(SETUP_MARKER, 'w') as f:
             f.write(str(time.time()))
             
     except subprocess.TimeoutExpired:
-        print("\n⚠️ Warning: Ollama check timed out. Assuming models are present to avoid startup delay.")
+        print("\nWarning: Ollama check timed out. Assuming models are present to avoid startup delay.")
     except subprocess.CalledProcessError:
-        print("\n❌ Error: Failed to communicate with Ollama. Is the server running?")
+        print("\nError: Failed to communicate with Ollama. Is the server running?")
         sys.exit(1)
 
 
@@ -70,7 +69,7 @@ def is_server_running():
         sock.settimeout(1)
         result = sock.connect_ex(('127.0.0.1', 8501))
         return result == 0
-    except:
+    except Exception:
         return False
     finally:
         sock.close()
@@ -81,7 +80,7 @@ def cleanup_locks():
         if os.path.exists(lock):
             try:
                 os.remove(lock)
-            except:
+            except OSError:
                 pass
 
 def start():
@@ -93,9 +92,23 @@ def start():
         print("Server restart detected. Continuing...")
     else:
         print("Initializing Hybrid Architecture...")
+        # Fresh start - clean stale locks
+        cleanup_locks()
     
+    # Determine launch requirements BEFORE starting server to prevent race conditions
+    should_launch_cli = not os.path.exists(CLI_LOCK)
+    should_launch_browser = not os.path.exists(BROWSER_LOCK)
+
+    # Reserve locks immediately to prevent race conditions with app.py
+    if should_launch_cli:
+        with open(CLI_LOCK, 'w') as f:
+            f.write(str(time.time()))
+            
+    if should_launch_browser:
+        with open(BROWSER_LOCK, 'w') as f:
+            f.write(str(time.time()))
+
     # 1. Start Flask UI in background (if not already running)
-    ui = None
     ui = None
     if not server_was_running:
         if "--debug" in sys.argv:
@@ -111,29 +124,24 @@ def start():
         )
         time.sleep(5)
     
-    # 2. Open Browser ONLY if not already opened
-    browser_already_open = os.path.exists(BROWSER_LOCK)
-    if not browser_already_open:
-        port = 8501 # Define port for clarity
+    # 2. Open Browser ONLY if reserved
+    if should_launch_browser:
+        port = 8501 
         print(f"Opening browser at http://127.0.0.1:{port}")
         webbrowser.open(f'http://127.0.0.1:{port}')
-        # Create lock file to prevent future duplicates
-        with open(BROWSER_LOCK, 'w') as f:
-            f.write(str(time.time()))
     else:
-        print("Browser already open. Skipping browser launch (refresh manually if needed).")
+        print("Browser already open. Skipping browser launch.")
     
-    # 3. Start Terminal Chat in New Window ONLY if not already opened
-    cli_already_open = os.path.exists(CLI_LOCK)
-    if not cli_already_open:
+    # 3. Start Terminal Chat ONLY if reserved
+    if should_launch_cli:
         print("\nLaunching CLI Chat in a new window...")
+        cli_script = "chat.py"
         if sys.platform == 'win32':
-            subprocess.Popen(["start", "cmd", "/k", sys.executable, "chat.py"], shell=True)
+             # Use absolute path for robustness
+             cli_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), cli_script)
+             subprocess.Popen(f'start "Onyx CLI" cmd /k "python {cli_path}"', shell=True)
         else:
-            subprocess.Popen(["x-terminal-emulator", "-e", f"{sys.executable} chat.py"])
-        # Create lock file
-        with open(CLI_LOCK, 'w') as f:
-            f.write(str(time.time()))
+             subprocess.Popen(["x-terminal-emulator", "-e", f"{sys.executable} {cli_script}"])
     else:
         print("CLI already open. Skipping CLI launch.")
 

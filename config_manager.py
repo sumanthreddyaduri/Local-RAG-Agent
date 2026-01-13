@@ -64,6 +64,7 @@ def load_config() -> Dict[str, Any]:
                 return _config_cache.copy()
             
             # Load from file
+            print(f"[DEBUG] Loading config from {CONFIG_FILE}...", flush=True)
             with open(CONFIG_FILE, "r") as f:
                 saved_config = json.load(f)
                 # Merge saved config with defaults (saved values take precedence)
@@ -75,6 +76,8 @@ def load_config() -> Dict[str, Any]:
             
         except (json.JSONDecodeError, IOError) as e:
             print(f"Warning: Could not load config file: {e}")
+    else:
+        print(f"[DEBUG] Config file {CONFIG_FILE} not found. Using defaults.", flush=True)
     
     return config
 
@@ -84,6 +87,7 @@ def save_config(config: Dict[str, Any]) -> bool:
     global _config_cache, _config_mtime
     
     try:
+        print(f"[DEBUG] Saving config to {CONFIG_FILE}...", flush=True)
         with open(CONFIG_FILE, "w") as f:
             json.dump(config, f, indent=2)
         
@@ -99,6 +103,7 @@ def save_config(config: Dict[str, Any]) -> bool:
 
 def update_config(updates: Dict[str, Any]) -> Dict[str, Any]:
     """Update specific configuration values and save."""
+    print(f"[DEBUG] Updating config with: {updates}", flush=True)
     config = load_config()
     config.update(updates)
     save_config(config)
